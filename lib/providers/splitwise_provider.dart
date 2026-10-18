@@ -479,6 +479,192 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   // ==========================================
+  // FORGOT & RESET PASSWORD
+  // ==========================================
+
+  Future<String?> sendPasswordResetCode(String email) async {
+    final cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
+      return 'Please enter a valid email address.';
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final snap = await firestore
+          .collection('users')
+          .where('email', isEqualTo: cleanEmail)
+          .limit(1)
+          .get();
+
+      User? targetUser;
+      if (snap.docs.isNotEmpty) {
+        targetUser = User.fromJson(snap.docs.first.data());
+      } else {
+        targetUser = _users
+            .where((u) => u.email.toLowerCase() == cleanEmail)
+            .firstOrNull;
+      }
+
+      if (targetUser == null) {
+        return 'No account found with this email. Please check the spelling or sign up.';
+      }
+
+      final code = (100000 + Random().nextInt(900000)).toString();
+      final updatedUser = targetUser.copyWith(
+        resetPasswordCode: code,
+        resetPasswordCodeSentAt: DateTime.now(),
+      );
+
+      final index = _users.indexWhere((u) => u.id == targetUser!.id);
+      if (index != -1) {
+        _users[index] = updatedUser;
+      } else {
+        _users.add(updatedUser);
+      }
+
+      final notif = AppNotification(
+        id: _uuid.v4(),
+        recipientUserId: updatedUser.id,
+        recipientName: updatedUser.name,
+        recipientEmail: updatedUser.email,
+        title: 'SplitIt Password Reset Code: $code',
+        body: 'Your 6-digit password reset code is $code. Enter it in the app to reset your password.',
+        timestamp: DateTime.now(),
+        type: 'password_reset',
+      );
+      _notifications.add(notif);
+      notifyListeners();
+
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'resetPasswordCode': code,
+        'resetPasswordCodeSentAt': DateTime.now().toIso8601String(),
+      });
+      batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
+      await batch.commit();
+
+      await NotificationService().showPasswordResetNotification(
+        email: updatedUser.email,
+        code: code,
+      );
+
+      return null;
+    } catch (e) {
+      debugPrint('Error sending password reset code: $e');
+      return 'Failed to send reset code: $e';
+    }
+  }
+
+  Future<String?> resetPasswordWithCode({
+    required String email,
+    required String code,
+    required String newPassword,
+  }) async {
+    final cleanEmail = email.trim().toLowerCase();
+    final cleanCode = code.trim();
+
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
+      return 'Please enter a valid email address.';
+    }
+    if (cleanCode.length != 6) {
+      return 'Please enter the 6-digit reset code.';
+    }
+    if (newPassword.length < 6) {
+      return 'Password must be at least 6 characters long.';
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final snap = await firestore
+          .collection('users')
+          .where('email', isEqualTo: cleanEmail)
+          .limit(1)
+          .get();
+
+      User? targetUser;
+      if (snap.docs.isNotEmpty) {
+        targetUser = User.fromJson(snap.docs.first.data());
+      } else {
+        targetUser = _users
+            .where((u) => u.email.toLowerCase() == cleanEmail)
+            .firstOrNull;
+      }
+
+      if (targetUser == null) {
+        return 'No account found with this email.';
+      }
+
+      final expectedCode = targetUser.resetPasswordCode?.trim();
+      if (expectedCode == null || expectedCode != cleanCode) {
+        return 'Invalid reset code. Please check your notification or request a new code.';
+      }
+
+      if (targetUser.resetPasswordCodeSentAt != null) {
+        final age = DateTime.now().difference(targetUser.resetPasswordCodeSentAt!);
+        if (age.inMinutes > 15) {
+          return 'Reset code has expired. Please request a new one.';
+        }
+      }
+
+      final updatedUser = targetUser.copyWith(
+        password: newPassword,
+        resetPasswordCode: null,
+      );
+
+      final index = _users.indexWhere((u) => u.id == targetUser!.id);
+      if (index != -1) {
+        _users[index] = updatedUser;
+      }
+
+      if (_currentUser?.id == targetUser.id) {
+        _currentUser = updatedUser;
+      }
+
+      final resetAct = ActivityItem(
+        id: _uuid.v4(),
+        title: 'Password reset',
+        subtitle: 'Password updated successfully.',
+        timestamp: DateTime.now(),
+        userId: updatedUser.id,
+      );
+
+      final resetNotif = AppNotification(
+        id: _uuid.v4(),
+        recipientUserId: updatedUser.id,
+        recipientName: updatedUser.name,
+        recipientEmail: updatedUser.email,
+        title: 'SplitIt Password Updated',
+        body: 'Your SplitIt password was changed successfully.',
+        timestamp: DateTime.now(),
+        type: 'password_reset_success',
+      );
+      _notifications.add(resetNotif);
+      notifyListeners();
+
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'password': newPassword,
+        'resetPasswordCode': FieldValue.delete(),
+        'resetPasswordCodeSentAt': FieldValue.delete(),
+      });
+      batch.set(firestore.collection('activities').doc(resetAct.id), resetAct.toJson());
+      batch.set(firestore.collection('notifications').doc(resetNotif.id), resetNotif.toJson());
+      await batch.commit();
+
+      await NotificationService().showNotification(
+        id: 9993,
+        title: 'Password Reset Successful',
+        body: 'Your SplitIt password has been updated. You can now log in with your new password.',
+      );
+
+      return null;
+    } catch (e) {
+      debugPrint('Error resetting password: $e');
+      return 'Failed to reset password: $e';
+    }
+  }
+
+  // ==========================================
   // PURGE LEGACY TESTING DATA
   // ==========================================
 

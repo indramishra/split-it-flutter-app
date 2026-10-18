@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
 import '../theme/app_theme.dart';
+import 'forgot_password_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -21,6 +22,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
   String? _errorMessage;
+  String? _successMessage;
 
   @override
   void dispose() {
@@ -34,6 +36,7 @@ class _AuthScreenState extends State<AuthScreen> {
   Future<void> _submit() async {
     setState(() {
       _errorMessage = null;
+      _successMessage = null;
       _isLoading = true;
     });
 
@@ -167,6 +170,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                     setState(() {
                                       _isSignUp = false;
                                       _errorMessage = null;
+                                      _successMessage = null;
                                     });
                                   },
                                   child: Container(
@@ -202,6 +206,7 @@ class _AuthScreenState extends State<AuthScreen> {
                                     setState(() {
                                       _isSignUp = true;
                                       _errorMessage = null;
+                                      _successMessage = null;
                                     });
                                   },
                                   child: Container(
@@ -235,6 +240,35 @@ class _AuthScreenState extends State<AuthScreen> {
                           ),
                         ),
                         const SizedBox(height: 20),
+
+                        // Success Banner
+                        if (_successMessage != null) ...[
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppTheme.tealLight,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: AppTheme.teal.withValues(alpha: 0.3)),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle_outline, color: AppTheme.teal, size: 20),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _successMessage!,
+                                    style: const TextStyle(
+                                      color: AppTheme.tealDark,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                        ],
 
                         // Error Banner
                         if (_errorMessage != null) ...[
@@ -328,7 +362,43 @@ class _AuthScreenState extends State<AuthScreen> {
                           ),
                           const SizedBox(height: 20),
                         ] else ...[
-                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              style: TextButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                minimumSize: Size.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                              onPressed: () async {
+                                final updatedEmail = await Navigator.of(context).push<String>(
+                                  MaterialPageRoute(
+                                    builder: (_) => ForgotPasswordScreen(
+                                      initialEmail: _emailController.text.trim(),
+                                    ),
+                                  ),
+                                );
+                                if (updatedEmail != null && mounted) {
+                                  setState(() {
+                                    _emailController.text = updatedEmail;
+                                    _passwordController.clear();
+                                    _isSignUp = false;
+                                    _errorMessage = null;
+                                    _successMessage = 'Password reset successfully! Please log in with your new password.';
+                                  });
+                                }
+                              },
+                              child: const Text(
+                                'Forgot Password?',
+                                style: TextStyle(
+                                  color: AppTheme.teal,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
                         ],
 
                         // Submit Button

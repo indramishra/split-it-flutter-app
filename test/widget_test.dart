@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:splitwise_app/models/expense.dart';
+import 'package:splitwise_app/models/user.dart';
 import 'package:splitwise_app/services/debt_simplifier.dart';
 
 void main() {
@@ -57,5 +58,28 @@ void main() {
     final bDebt = simplified.firstWhere((d) => d.fromUserId == 'B');
     expect(bDebt.toUserId, 'A');
     expect(bDebt.amount, 5.0);
+  });
+
+  test('User model handles resetPasswordCode serialization and copyWith', () {
+    final now = DateTime.now();
+    final user = User(
+      id: 'u123',
+      name: 'Test User',
+      email: 'test@example.com',
+      resetPasswordCode: '654321',
+      resetPasswordCodeSentAt: now,
+    );
+
+    final json = user.toJson();
+    expect(json['resetPasswordCode'], '654321');
+    expect(json['resetPasswordCodeSentAt'], now.toIso8601String());
+
+    final parsed = User.fromJson(json);
+    expect(parsed.resetPasswordCode, '654321');
+    expect(parsed.resetPasswordCodeSentAt, isNotNull);
+
+    final updated = parsed.copyWith(password: 'newSecretPass');
+    expect(updated.password, 'newSecretPass');
+    expect(updated.resetPasswordCode, '654321');
   });
 }

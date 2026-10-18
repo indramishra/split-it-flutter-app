@@ -8,6 +8,8 @@ class User {
   final bool isEmailVerified;
   final String? verificationCode;
   final DateTime? verificationCodeSentAt;
+  final String? resetPasswordCode;
+  final DateTime? resetPasswordCodeSentAt;
 
   const User({
     required this.id,
@@ -19,6 +21,8 @@ class User {
     this.isEmailVerified = false,
     this.verificationCode,
     this.verificationCodeSentAt,
+    this.resetPasswordCode,
+    this.resetPasswordCodeSentAt,
   });
 
   User copyWith({
@@ -31,6 +35,8 @@ class User {
     bool? isEmailVerified,
     String? verificationCode,
     DateTime? verificationCodeSentAt,
+    String? resetPasswordCode,
+    DateTime? resetPasswordCodeSentAt,
   }) {
     return User(
       id: id ?? this.id,
@@ -43,6 +49,9 @@ class User {
       verificationCode: verificationCode ?? this.verificationCode,
       verificationCodeSentAt:
           verificationCodeSentAt ?? this.verificationCodeSentAt,
+      resetPasswordCode: resetPasswordCode ?? this.resetPasswordCode,
+      resetPasswordCodeSentAt:
+          resetPasswordCodeSentAt ?? this.resetPasswordCodeSentAt,
     );
   }
 
@@ -57,6 +66,9 @@ class User {
         if (verificationCode != null) 'verificationCode': verificationCode,
         if (verificationCodeSentAt != null)
           'verificationCodeSentAt': verificationCodeSentAt!.toIso8601String(),
+        if (resetPasswordCode != null) 'resetPasswordCode': resetPasswordCode,
+        if (resetPasswordCodeSentAt != null)
+          'resetPasswordCodeSentAt': resetPasswordCodeSentAt!.toIso8601String(),
       };
 
   factory User.fromJson(Map<String, dynamic> json) => User(
@@ -72,6 +84,10 @@ class User {
         verificationCode: json['verificationCode'] as String?,
         verificationCodeSentAt: json['verificationCodeSentAt'] != null
             ? DateTime.tryParse(json['verificationCodeSentAt'] as String)
+            : null,
+        resetPasswordCode: json['resetPasswordCode'] as String?,
+        resetPasswordCodeSentAt: json['resetPasswordCodeSentAt'] != null
+            ? DateTime.tryParse(json['resetPasswordCodeSentAt'] as String)
             : null,
       );
 }

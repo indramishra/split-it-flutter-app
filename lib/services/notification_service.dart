@@ -152,4 +152,16 @@ class NotificationService {
       payload: 'verify_email',
     );
   }
+
+  Future<void> showPasswordResetNotification({
+    required String email,
+    required String code,
+  }) async {
+    await showNotification(
+      id: 9992,
+      title: 'SplitIt Password Reset Code: $code',
+      body: 'Your 6-digit password reset code for $email is $code. Enter it in the app to reset your password.',
+      payload: 'reset_password',
+    );
+  }
 }
