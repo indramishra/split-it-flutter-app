@@ -66,4 +66,22 @@ class ActivityItem {
     required this.timestamp,
     this.expenseId,
   });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'subtitle': subtitle,
+        'timestamp': timestamp.toIso8601String(),
+        'expenseId': expenseId,
+      };
+
+  factory ActivityItem.fromJson(Map<String, dynamic> json) => ActivityItem(
+        id: json['id'] as String,
+        title: json['title'] as String,
+        subtitle: json['subtitle'] as String,
+        timestamp: json['timestamp'] != null
+            ? DateTime.parse(json['timestamp'] as String)
+            : DateTime.now(),
+        expenseId: json['expenseId'] as String?,
+      );
 }

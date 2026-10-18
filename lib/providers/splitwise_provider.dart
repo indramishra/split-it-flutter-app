@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/user.dart';
 import '../models/group.dart';
 import '../models/expense.dart';
@@ -22,8 +24,17 @@ class SplitwiseProvider extends ChangeNotifier {
   // Currency symbol
   String _currency = '₹';
 
+  // Firestore Subscriptions
+  StreamSubscription? _usersSub;
+  StreamSubscription? _groupsSub;
+  StreamSubscription? _expensesSub;
+  StreamSubscription? _activitiesSub;
+  StreamSubscription? _notificationsSub;
+  bool _isSeeding = false;
+
   SplitwiseProvider() {
     _initDemoData();
+    _initFirestoreSync();
   }
 
   User get currentUser => _currentUser;
@@ -144,6 +155,95 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
+  // Real-time Firestore sync setup
+  void _initFirestoreSync() {
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      firestore.collection('users').get().then((snapshot) {
+        if (snapshot.docs.isEmpty && !_isSeeding) {
+          _isSeeding = true;
+          _seedInitialFirestoreData(firestore);
+        }
+      }).catchError((e) {
+        debugPrint('Firestore seed check error: $e');
+      });
+
+      _usersSub = firestore.collection('users').snapshots().listen((snap) {
+        if (snap.docs.isNotEmpty) {
+          final newUsers = snap.docs.map((d) => User.fromJson(d.data())).toList();
+          _users.clear();
+          _users.addAll(newUsers);
+          try {
+            _currentUser = _users.firstWhere((u) => u.id == _currentUser.id);
+          } catch (_) {
+            if (_users.isNotEmpty) _currentUser = _users.first;
+          }
+          notifyListeners();
+        }
+      }, onError: (e) => debugPrint('Users stream error: $e'));
+
+      _groupsSub = firestore.collection('groups').snapshots().listen((snap) {
+        if (snap.docs.isNotEmpty) {
+          _groups.clear();
+          _groups.addAll(snap.docs.map((d) => Group.fromJson(d.data())));
+          notifyListeners();
+        }
+      }, onError: (e) => debugPrint('Groups stream error: $e'));
+
+      _expensesSub = firestore.collection('expenses').snapshots().listen((snap) {
+        if (snap.docs.isNotEmpty) {
+          _expenses.clear();
+          _expenses.addAll(snap.docs.map((d) => Expense.fromJson(d.data())));
+          notifyListeners();
+        }
+      }, onError: (e) => debugPrint('Expenses stream error: $e'));
+
+      _activitiesSub = firestore.collection('activities').snapshots().listen((snap) {
+        if (snap.docs.isNotEmpty) {
+          _activities.clear();
+          _activities.addAll(snap.docs.map((d) => ActivityItem.fromJson(d.data())));
+          notifyListeners();
+        }
+      }, onError: (e) => debugPrint('Activities stream error: $e'));
+
+      _notificationsSub = firestore.collection('notifications').snapshots().listen((snap) {
+        if (snap.docs.isNotEmpty) {
+          _notifications.clear();
+          _notifications.addAll(snap.docs.map((d) => AppNotification.fromJson(d.data())));
+          notifyListeners();
+        }
+      }, onError: (e) => debugPrint('Notifications stream error: $e'));
+    } catch (e) {
+      debugPrint('Firestore initialization error: $e');
+    }
+  }
+
+  Future<void> _seedInitialFirestoreData(FirebaseFirestore firestore) async {
+    final batch = firestore.batch();
+    for (final u in _users) {
+      batch.set(firestore.collection('users').doc(u.id), u.toJson());
+    }
+    for (final g in _groups) {
+      batch.set(firestore.collection('groups').doc(g.id), g.toJson());
+    }
+    for (final e in _expenses) {
+      batch.set(firestore.collection('expenses').doc(e.id), e.toJson());
+    }
+    for (final a in _activities) {
+      batch.set(firestore.collection('activities').doc(a.id), a.toJson());
+    }
+    for (final n in _notifications) {
+      batch.set(firestore.collection('notifications').doc(n.id), n.toJson());
+    }
+    try {
+      await batch.commit();
+      debugPrint('Firestore successfully seeded with initial data.');
+    } catch (e) {
+      debugPrint('Firestore seed batch commit failed: $e');
+    }
+  }
+
   // Add new expense
   void addExpense({
     String? groupId,
@@ -173,13 +273,14 @@ class SplitwiseProvider extends ChangeNotifier {
     final group = groupId != null ? getGroup(groupId) : null;
     final context = group != null ? 'in "${group.name}"' : '';
 
-    _activities.add(ActivityItem(
+    final activityItem = ActivityItem(
       id: _uuid.v4(),
       title: '$payer added "$description"',
       subtitle: '$context • $_currency${cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
       expenseId: newExpense.id,
-    ));
+    );
+    _activities.add(activityItem);
 
     // Dispatch notification to ALL group members (or split participants)
     final recipients = <String>{};
@@ -190,6 +291,7 @@ class SplitwiseProvider extends ChangeNotifier {
       recipients.add(paidByUserId);
     }
 
+    final newNotifs = <AppNotification>[];
     for (final recipientId in recipients) {
       final recipient = getUser(recipientId);
       if (recipient == null) continue;
@@ -204,7 +306,7 @@ class SplitwiseProvider extends ChangeNotifier {
           ? 'You added "$description" for $_currency${cost.toStringAsFixed(2)}.'
           : '$payer added "$description" ($_currency${cost.toStringAsFixed(2)}). Your share is $_currency${share.toStringAsFixed(2)}.';
 
-      _notifications.add(AppNotification(
+      final notif = AppNotification(
         id: _uuid.v4(),
         recipientUserId: recipient.id,
         recipientName: recipient.name,
@@ -215,10 +317,26 @@ class SplitwiseProvider extends ChangeNotifier {
         groupId: groupId,
         groupName: group?.name,
         type: 'expense_added',
-      ));
+      );
+      _notifications.add(notif);
+      newNotifs.add(notif);
     }
 
     notifyListeners();
+
+    // Sync to Firestore
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.set(firestore.collection('expenses').doc(newExpense.id), newExpense.toJson());
+      batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
+      for (final n in newNotifs) {
+        batch.set(firestore.collection('notifications').doc(n.id), n.toJson());
+      }
+      batch.commit().catchError((e) => debugPrint('Firestore addExpense error: $e'));
+    } catch (e) {
+      debugPrint('Firestore addExpense exception: $e');
+    }
   }
 
   // Settle up payment between two users
@@ -248,13 +366,14 @@ class SplitwiseProvider extends ChangeNotifier {
 
     _expenses.add(paymentExpense);
 
-    _activities.add(ActivityItem(
+    final activityItem = ActivityItem(
       id: _uuid.v4(),
       title: '$fromUser settled with $toUser',
       subtitle: 'Payment of $_currency${amount.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
       expenseId: paymentExpense.id,
-    ));
+    );
+    _activities.add(activityItem);
 
     // Dispatch notification to ALL group members
     final group = groupId != null ? getGroup(groupId) : null;
@@ -263,6 +382,7 @@ class SplitwiseProvider extends ChangeNotifier {
       recipients.addAll(group.memberIds);
     }
 
+    final newNotifs = <AppNotification>[];
     for (final recipientId in recipients) {
       final recipient = getUser(recipientId);
       if (recipient == null) continue;
@@ -278,7 +398,7 @@ class SplitwiseProvider extends ChangeNotifier {
       final body =
           '$fromUser paid $toUser $_currency${amount.toStringAsFixed(2)} to settle up.';
 
-      _notifications.add(AppNotification(
+      final notif = AppNotification(
         id: _uuid.v4(),
         recipientUserId: recipient.id,
         recipientName: recipient.name,
@@ -289,32 +409,68 @@ class SplitwiseProvider extends ChangeNotifier {
         groupId: groupId,
         groupName: group?.name,
         type: 'payment_settled',
-      ));
+      );
+      _notifications.add(notif);
+      newNotifs.add(notif);
     }
 
     notifyListeners();
+
+    // Sync to Firestore
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.set(firestore.collection('expenses').doc(paymentExpense.id), paymentExpense.toJson());
+      batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
+      for (final n in newNotifs) {
+        batch.set(firestore.collection('notifications').doc(n.id), n.toJson());
+      }
+      batch.commit().catchError((e) => debugPrint('Firestore settleUp error: $e'));
+    } catch (e) {
+      debugPrint('Firestore settleUp exception: $e');
+    }
   }
 
   void deleteExpense(String expenseId) {
     final exp = _expenses.firstWhere((e) => e.id == expenseId, orElse: () => _expenses.first);
     _expenses.removeWhere((e) => e.id == expenseId);
 
-    _activities.add(ActivityItem(
+    final deleteActivity = ActivityItem(
       id: _uuid.v4(),
       title: 'Deleted expense "${exp.description}"',
       subtitle: 'Amount: $_currency${exp.cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
-    ));
+    );
+    _activities.add(deleteActivity);
 
     notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      firestore.collection('expenses').doc(expenseId).delete().catchError((e) => debugPrint('Firestore delete error: $e'));
+      firestore.collection('activities').doc(deleteActivity.id).set(deleteActivity.toJson()).catchError((e) => debugPrint('Firestore deleteActivity error: $e'));
+    } catch (e) {
+      debugPrint('Firestore delete exception: $e');
+    }
   }
 
   void toggleGroupSimplifyDebts(String groupId) {
     final index = _groups.indexWhere((g) => g.id == groupId);
     if (index != -1) {
       final g = _groups[index];
-      _groups[index] = g.copyWith(simplifyByDefault: !g.simplifyByDefault);
+      final newSimplified = !g.simplifyByDefault;
+      _groups[index] = g.copyWith(simplifyByDefault: newSimplified);
       notifyListeners();
+
+      try {
+        FirebaseFirestore.instance
+            .collection('groups')
+            .doc(groupId)
+            .update({'simplifyByDefault': newSimplified})
+            .catchError((e) => debugPrint('Firestore toggleSimplifyDebts error: $e'));
+      } catch (e) {
+        debugPrint('Firestore toggleSimplifyDebts exception: $e');
+      }
     }
   }
 
@@ -335,20 +491,22 @@ class SplitwiseProvider extends ChangeNotifier {
 
     _groups.add(newGroup);
 
-    _activities.add(ActivityItem(
+    final activityItem = ActivityItem(
       id: _uuid.v4(),
       title: 'Created group "${newGroup.name}"',
       subtitle: '${allMembers.length} members',
       timestamp: DateTime.now(),
-    ));
+    );
+    _activities.add(activityItem);
 
     // Dispatch notification to ALL members added to the group
+    final newNotifs = <AppNotification>[];
     for (final memberId in allMembers) {
       final member = getUser(memberId);
       if (member == null) continue;
       final isCreator = memberId == _currentUser.id;
 
-      _notifications.add(AppNotification(
+      final notif = AppNotification(
         id: _uuid.v4(),
         recipientUserId: member.id,
         recipientName: member.name,
@@ -361,10 +519,25 @@ class SplitwiseProvider extends ChangeNotifier {
         groupId: newGroup.id,
         groupName: newGroup.name,
         type: 'group_created',
-      ));
+      );
+      _notifications.add(notif);
+      newNotifs.add(notif);
     }
 
     notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.set(firestore.collection('groups').doc(newGroup.id), newGroup.toJson());
+      batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
+      for (final n in newNotifs) {
+        batch.set(firestore.collection('notifications').doc(n.id), n.toJson());
+      }
+      batch.commit().catchError((e) => debugPrint('Firestore createGroup error: $e'));
+    } catch (e) {
+      debugPrint('Firestore createGroup exception: $e');
+    }
   }
 
   void markAllNotificationsAsRead() {
@@ -372,6 +545,17 @@ class SplitwiseProvider extends ChangeNotifier {
       n.isRead = true;
     }
     notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      for (final n in _notifications) {
+        batch.update(firestore.collection('notifications').doc(n.id), {'isRead': true});
+      }
+      batch.commit().catchError((e) => debugPrint('Firestore markAllNotificationsAsRead error: $e'));
+    } catch (e) {
+      debugPrint('Firestore markAllNotificationsAsRead exception: $e');
+    }
   }
 
   void markNotificationAsRead(String notificationId) {
@@ -381,11 +565,33 @@ class SplitwiseProvider extends ChangeNotifier {
     );
     n.isRead = true;
     notifyListeners();
+
+    try {
+      FirebaseFirestore.instance
+          .collection('notifications')
+          .doc(notificationId)
+          .update({'isRead': true})
+          .catchError((e) => debugPrint('Firestore markNotificationAsRead error: $e'));
+    } catch (e) {
+      debugPrint('Firestore markNotificationAsRead exception: $e');
+    }
   }
 
   void clearNotifications() {
+    final toDelete = List<AppNotification>.from(_notifications);
     _notifications.clear();
     notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      for (final n in toDelete) {
+        batch.delete(firestore.collection('notifications').doc(n.id));
+      }
+      batch.commit().catchError((e) => debugPrint('Firestore clearNotifications error: $e'));
+    } catch (e) {
+      debugPrint('Firestore clearNotifications exception: $e');
+    }
   }
 
   void addFriend({required String name, required String email}) {
@@ -396,14 +602,25 @@ class SplitwiseProvider extends ChangeNotifier {
     );
     _users.add(newFriend);
 
-    _activities.add(ActivityItem(
+    final activityItem = ActivityItem(
       id: _uuid.v4(),
       title: 'Added friend "$name"',
       subtitle: email,
       timestamp: DateTime.now(),
-    ));
+    );
+    _activities.add(activityItem);
 
     notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.set(firestore.collection('users').doc(newFriend.id), newFriend.toJson());
+      batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
+      batch.commit().catchError((e) => debugPrint('Firestore addFriend error: $e'));
+    } catch (e) {
+      debugPrint('Firestore addFriend exception: $e');
+    }
   }
 
   void _initDemoData() {
@@ -588,5 +805,15 @@ class SplitwiseProvider extends ChangeNotifier {
         isRead: true,
       ),
     ]);
+  }
+
+  @override
+  void dispose() {
+    _usersSub?.cancel();
+    _groupsSub?.cancel();
+    _expensesSub?.cancel();
+    _activitiesSub?.cancel();
+    _notificationsSub?.cancel();
+    super.dispose();
   }
 }

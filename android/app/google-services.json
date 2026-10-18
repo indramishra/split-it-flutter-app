@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "236349691458",
+    "project_id": "splitwise-app-cd9933",
+    "storage_bucket": "splitwise-app-cd9933.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:236349691458:android:2df44a6d34ea90dbf0bfdb",
+        "android_client_info": {
+          "package_name": "com.indra.splitIt"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCe1QJC64eEDf_D5j0gbUmlzoGZ3o4ouvo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:236349691458:android:b457f6520d22ed5ff0bfdb",
+        "android_client_info": {
+          "package_name": "com.splitwise.clone.splitwise_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCe1QJC64eEDf_D5j0gbUmlzoGZ3o4ouvo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
