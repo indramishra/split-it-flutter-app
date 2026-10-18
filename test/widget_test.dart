@@ -1,0 +1,69 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:splitwise_app/main.dart';
+import 'package:splitwise_app/models/expense.dart';
+import 'package:splitwise_app/services/debt_simplifier.dart';
+
+void main() {
+  testWidgets('SplitwiseApp smoke test', (WidgetTester tester) async {
+    await tester.pumpWidget(const SplitwiseApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('Splitwise'), findsOneWidget);
+    expect(find.text('Groups'), findsOneWidget);
+    expect(find.text('Friends'), findsOneWidget);
+    expect(find.text('Activity'), findsOneWidget);
+    expect(find.text('Account'), findsOneWidget);
+    expect(find.text('Add Expense'), findsOneWidget);
+  });
+
+  test('DebtSimplifier algorithm correctly minimizes transactions', () {
+    // A pays 60 for A, B, C equally (20 each) -> B owes 20, C owes 20, A is owed 40
+    // B pays 30 for B, C equally (15 each) -> C owes B 15
+    // Net:
+    // A: +40
+    // B: -20 + 15 = -5
+    // C: -20 - 15 = -35
+    //
+    // Simplified debts:
+    // C owes A 35
+    // B owes A 5
+    // Total transactions = 2 (instead of 3)
+
+    final expenses = [
+      Expense(
+        id: '1',
+        description: 'Dinner',
+        cost: 60.0,
+        date: DateTime.now(),
+        paidByUserId: 'A',
+        splitShares: {'A': 20.0, 'B': 20.0, 'C': 20.0},
+      ),
+      Expense(
+        id: '2',
+        description: 'Snacks',
+        cost: 30.0,
+        date: DateTime.now(),
+        paidByUserId: 'B',
+        splitShares: {'B': 15.0, 'C': 15.0},
+      ),
+    ];
+
+    final net = DebtSimplifier.computeNetBalances(expenses: expenses);
+    expect(net['A'], 40.0);
+    expect(net['B'], -5.0);
+    expect(net['C'], -35.0);
+
+    final simplified = DebtSimplifier.simplifyDebts(net);
+    expect(simplified.length, 2);
+
+    // C should pay A 35
+    final cDebt = simplified.firstWhere((d) => d.fromUserId == 'C');
+    expect(cDebt.toUserId, 'A');
+    expect(cDebt.amount, 35.0);
+
+    // B should pay A 5
+    final bDebt = simplified.firstWhere((d) => d.fromUserId == 'B');
+    expect(bDebt.toUserId, 'A');
+    expect(bDebt.amount, 5.0);
+  });
+}
