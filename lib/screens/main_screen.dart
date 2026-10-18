@@ -8,6 +8,7 @@ import '../widgets/notification_drawer.dart';
 import 'add_expense_screen.dart';
 import 'group_detail_screen.dart';
 import 'friend_detail_screen.dart';
+import 'search_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -45,10 +46,23 @@ class _MainScreenState extends State<MainScreen> {
               child: const Icon(Icons.call_split, color: Colors.white, size: 20),
             ),
             const SizedBox(width: 10),
-            const Text('Splitwise'),
+            const Text(
+              'SplitIt',
+              style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.3),
+            ),
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Search groups, friends, expenses',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (ctx) => const SearchScreen()),
+              );
+            },
+          ),
           IconButton(
             icon: const Icon(Icons.person_add_outlined),
             tooltip: _currentIndex == 0 ? 'Create Group' : 'Add Friend',
@@ -375,6 +389,12 @@ class _MainScreenState extends State<MainScreen> {
 
   // 4. ACCOUNT TAB
   Widget _buildAccountTab(BuildContext context, SplitwiseProvider provider) {
+    final user = provider.currentUser;
+    final initial = user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U';
+    final memberSince = user.createdAt != null
+        ? DateFormat('MMMM yyyy').format(user.createdAt!)
+        : 'Active';
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -392,8 +412,12 @@ class _MainScreenState extends State<MainScreen> {
                 radius: 28,
                 backgroundColor: AppTheme.teal,
                 child: Text(
-                  provider.currentUser.name[0].toUpperCase(),
-                  style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.w700),
+                  initial,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               const SizedBox(width: 16),
@@ -402,12 +426,22 @@ class _MainScreenState extends State<MainScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      provider.currentUser.name,
+                      user.name.isNotEmpty ? user.name : 'SplitIt Member',
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                     ),
+                    const SizedBox(height: 2),
                     Text(
-                      provider.currentUser.email,
+                      user.email,
                       style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Member since $memberSince',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.tealDark,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -415,7 +449,18 @@ class _MainScreenState extends State<MainScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
+
+        // Device Installed & Registered Users Directory
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.devices, color: AppTheme.teal),
+            title: const Text('Registered App Users'),
+            subtitle: Text('${provider.users.length} device user(s) synced in Firestore'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _showAllUsersDialog(context, provider),
+          ),
+        ),
 
         // Currency Setting
         Card(
@@ -438,29 +483,47 @@ class _MainScreenState extends State<MainScreen> {
           ),
         ),
 
-        // Switch User (Demo convenience)
+        // Switch User (For testing multi-device perspective)
+        if (provider.users.length > 1)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.switch_account_outlined, color: AppTheme.teal),
+              title: const Text('Switch Active User'),
+              subtitle: const Text('Preview app from another registered device/user'),
+              trailing: DropdownButton<String>(
+                value: provider.currentUser.id.isNotEmpty &&
+                        provider.users.any((u) => u.id == provider.currentUser.id)
+                    ? provider.currentUser.id
+                    : null,
+                underline: const SizedBox(),
+                items: provider.users.map((u) {
+                  return DropdownMenuItem(
+                    value: u.id,
+                    child: Text(u.name),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  if (val != null) provider.switchCurrentUser(val);
+                },
+              ),
+            ),
+          ),
+
+        // Purge Testing Data Tool
         Card(
           child: ListTile(
-            leading: const Icon(Icons.switch_account_outlined, color: AppTheme.teal),
-            title: const Text('Switch Active User'),
-            subtitle: const Text('Preview app from another member perspective'),
-            trailing: DropdownButton<String>(
-              value: provider.currentUser.id,
-              underline: const SizedBox(),
-              items: provider.users.map((u) {
-                return DropdownMenuItem(
-                  value: u.id,
-                  child: Text(u.name),
-                );
-              }).toList(),
-              onChanged: (val) {
-                if (val != null) provider.switchCurrentUser(val);
-              },
+            leading: const Icon(Icons.cleaning_services_outlined, color: AppTheme.negativeOrange),
+            title: const Text('Clean Testing Data'),
+            subtitle: const Text('Purge remnant demo records from Firestore'),
+            trailing: TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppTheme.negativeOrange),
+              onPressed: () => _showPurgeDataDialog(context, provider),
+              child: const Text('Clean'),
             ),
           ),
         ),
 
-        // REA Reverse Engineering Info
+        // Architecture Card
         Card(
           child: const Padding(
             padding: EdgeInsets.all(16),
@@ -469,27 +532,143 @@ class _MainScreenState extends State<MainScreen> {
               children: [
                 Row(
                   children: [
-                    Icon(Icons.terminal, color: AppTheme.teal, size: 20),
+                    Icon(Icons.hub_outlined, color: AppTheme.teal, size: 20),
                     SizedBox(width: 8),
                     Text(
-                      'Reverse Engineered via REA',
+                      'SplitIt Engine (REA Reconstructed)',
                       style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                     ),
                   ],
                 ),
                 SizedBox(height: 8),
                 Text(
-                  'Extracted from Splitwise architecture:\n'
+                  '• Real-time multi-device cloud synchronization\n'
                   '• Greedy Min-Cash-Flow Debt Simplifier algorithm\n'
-                  '• Equal and exact-shares bill distribution\n'
-                  '• Full group & friendship ledger settlements',
+                  '• Instant omni-search across friends, groups & expenses\n'
+                  '• Safe group exit & member removal mechanism',
                   style: TextStyle(fontSize: 12, height: 1.5, color: AppTheme.textMuted),
                 ),
               ],
             ),
           ),
         ),
+        const SizedBox(height: 12),
+
+        // Log Out Button
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.red.shade700,
+              side: BorderSide(color: Colors.red.shade300),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            icon: const Icon(Icons.logout),
+            label: const Text('Log Out of SplitIt', style: TextStyle(fontWeight: FontWeight.w700)),
+            onPressed: () => _confirmLogout(context, provider),
+          ),
+        ),
+        const SizedBox(height: 80),
       ],
+    );
+  }
+
+  void _showAllUsersDialog(BuildContext context, SplitwiseProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.devices, color: AppTheme.teal),
+            const SizedBox(width: 8),
+            Text('Registered Users (${provider.users.length})'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: provider.users.isEmpty
+              ? const Text('No other users registered yet.')
+              : ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: provider.users.length,
+                  itemBuilder: (ctx, idx) {
+                    final u = provider.users[idx];
+                    final isMe = u.id == provider.currentUser.id;
+                    return ListTile(
+                      leading: CircleAvatar(
+                        backgroundColor: isMe ? AppTheme.teal : Colors.grey.shade200,
+                        foregroundColor: isMe ? Colors.white : AppTheme.charcoal,
+                        child: Text(u.name.isNotEmpty ? u.name[0].toUpperCase() : '?'),
+                      ),
+                      title: Text(u.name),
+                      subtitle: Text(u.email),
+                      trailing: isMe
+                          ? const Chip(label: Text('You', style: TextStyle(fontSize: 11)))
+                          : null,
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  void _showPurgeDataDialog(BuildContext context, SplitwiseProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clean Testing Data?'),
+        content: const Text(
+          'This will purge any remnant legacy mock records (e.g. Rahul, Priya, Apartment 402, etc.) from Firestore so your app stays clean.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.negativeOrange,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await provider.purgeLegacyTestData();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Testing data purged successfully.')),
+                );
+              }
+            },
+            child: const Text('Purge Data'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmLogout(BuildContext context, SplitwiseProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Log Out?'),
+        content: const Text('Are you sure you want to log out of SplitIt?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              provider.logout();
+            },
+            child: const Text('Log Out'),
+          ),
+        ],
+      ),
     );
   }
 

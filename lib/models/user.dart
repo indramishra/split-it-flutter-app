@@ -3,12 +3,16 @@ class User {
   final String name;
   final String email;
   final String? avatarUrl;
+  final String? password;
+  final DateTime? createdAt;
 
   const User({
     required this.id,
     required this.name,
     required this.email,
     this.avatarUrl,
+    this.password,
+    this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
@@ -16,6 +20,8 @@ class User {
         'name': name,
         'email': email,
         'avatarUrl': avatarUrl,
+        if (password != null) 'password': password,
+        'createdAt': (createdAt ?? DateTime.now()).toIso8601String(),
       };
 
   factory User.fromJson(Map<String, dynamic> json) => User(
@@ -23,6 +29,10 @@ class User {
         name: json['name'] as String,
         email: json['email'] as String,
         avatarUrl: json['avatarUrl'] as String?,
+        password: json['password'] as String?,
+        createdAt: json['createdAt'] != null
+            ? DateTime.tryParse(json['createdAt'] as String)
+            : null,
       );
 }
 

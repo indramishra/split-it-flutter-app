@@ -119,6 +119,41 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
               ],
             ),
           ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (val) {
+              if (val == 'members') {
+                _showMembersDialog(context, group);
+              } else if (val == 'exit') {
+                _showExitGroupDialog(context, group);
+              }
+            },
+            itemBuilder: (ctx) => [
+              const PopupMenuItem(
+                value: 'members',
+                child: Row(
+                  children: [
+                    Icon(Icons.people_outline, size: 20),
+                    SizedBox(width: 10),
+                    Text('Group Members'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'exit',
+                child: Row(
+                  children: [
+                    Icon(Icons.exit_to_app, color: AppTheme.negativeOrange, size: 20),
+                    SizedBox(width: 10),
+                    Text(
+                      'Leave Group',
+                      style: TextStyle(color: AppTheme.negativeOrange),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
           const SizedBox(width: 4),
         ],
         bottom: TabBar(
@@ -458,13 +493,29 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
             children: group.memberIds.map((id) {
               final user = provider.getUser(id);
               final isMe = id == provider.currentUser.id;
+              final initial = user?.name.isNotEmpty == true ? user!.name[0].toUpperCase() : '?';
+
               return ListTile(
-                leading: CircleAvatar(child: Text(user?.name[0] ?? '?')),
+                leading: CircleAvatar(
+                  backgroundColor: isMe ? AppTheme.tealLight : Colors.grey.shade200,
+                  foregroundColor: isMe ? AppTheme.tealDark : AppTheme.charcoal,
+                  child: Text(initial),
+                ),
                 title: Text(user?.name ?? id),
                 subtitle: Text(user?.email ?? ''),
                 trailing: isMe
-                    ? const Chip(label: Text('You', style: TextStyle(fontSize: 11)))
-                    : null,
+                    ? const Chip(
+                        label: Text('You', style: TextStyle(fontSize: 11)),
+                        backgroundColor: AppTheme.tealLight,
+                      )
+                    : IconButton(
+                        icon: const Icon(Icons.person_remove_outlined, color: Colors.red, size: 20),
+                        tooltip: 'Remove from group',
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _confirmRemoveMember(context, group, id, user?.name ?? 'Member');
+                        },
+                      ),
               );
             }).toList(),
           ),
@@ -473,6 +524,160 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Close'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.negativeOrange,
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.exit_to_app, size: 16),
+            label: const Text('Leave Group'),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _showExitGroupDialog(context, group);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmRemoveMember(
+      BuildContext context, Group group, String memberId, String memberName) {
+    final provider = context.read<SplitwiseProvider>();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove Member?'),
+        content: Text('Remove "$memberName" from "${group.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await provider.removeMemberFromGroup(groupId: group.id, memberId: memberId);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Removed "$memberName" from group.')),
+                );
+              }
+            },
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showExitGroupDialog(BuildContext context, Group group) {
+    final provider = context.read<SplitwiseProvider>();
+    final myId = provider.currentUser.id;
+
+    final debts = provider.getGroupDebts(group.id);
+    double userOwes = 0.0;
+    double userIsOwed = 0.0;
+    for (final d in debts) {
+      if (d.fromUserId == myId) userOwes += d.amount;
+      if (d.toUserId == myId) userIsOwed += d.amount;
+    }
+    final net = userIsOwed - userOwes;
+    final hasUnsettled = net.abs() > 0.01;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.exit_to_app, color: AppTheme.negativeOrange),
+            SizedBox(width: 8),
+            Text('Leave Group'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Are you sure you want to leave "${group.name}"?'),
+            if (hasUnsettled) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFECE5),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: AppTheme.negativeOrange, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        net > 0
+                            ? 'You are owed ${provider.currency}${net.toStringAsFixed(2)} in this group.'
+                            : 'You owe ${provider.currency}${net.abs().toStringAsFixed(2)} in this group.',
+                        style: const TextStyle(
+                          color: AppTheme.negativeOrange,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'If you were added unintentionally, you can exit anyway.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          if (hasUnsettled)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _tabController.animateTo(1);
+              },
+              child: const Text('Settle Up'),
+            ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.negativeOrange,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final err = await provider.exitGroup(
+                groupId: group.id,
+                userId: myId,
+              );
+              if (context.mounted) {
+                if (err != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(err)),
+                  );
+                } else {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('You left "${group.name}".')),
+                  );
+                }
+              }
+            },
+            child: const Text('Exit Group'),
           ),
         ],
       ),

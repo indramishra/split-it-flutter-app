@@ -364,7 +364,7 @@ class _NotificationDrawerState extends State<NotificationDrawer> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildHeaderRow('From', 'Splitwise Notifications <notify@splitwise.clone>'),
+                      _buildHeaderRow('From', 'SplitIt Notifications <notify@splitit.app>'),
                       const SizedBox(height: 4),
                       _buildHeaderRow('To', '${notif.recipientName} <${notif.recipientEmail}>'),
                       const SizedBox(height: 4),
@@ -399,7 +399,7 @@ class _NotificationDrawerState extends State<NotificationDrawer> {
                           ),
                           const SizedBox(width: 8),
                           const Text(
-                            'Splitwise',
+                            'SplitIt',
                             style: TextStyle(
                               fontWeight: FontWeight.w800,
                               fontSize: 16,
@@ -427,7 +427,7 @@ class _NotificationDrawerState extends State<NotificationDrawer> {
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: const Text(
-                            'View in Splitwise',
+                            'View in SplitIt',
                             style: TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.w700,

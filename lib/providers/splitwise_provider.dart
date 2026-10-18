@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/user.dart';
 import '../models/group.dart';
 import '../models/expense.dart';
@@ -12,7 +13,8 @@ class SplitwiseProvider extends ChangeNotifier {
   final _uuid = const Uuid();
 
   // Current Logged In User
-  late User _currentUser;
+  User? _currentUser;
+  bool _isAuthLoading = true;
 
   // Master Lists
   final List<User> _users = [];
@@ -30,25 +32,58 @@ class SplitwiseProvider extends ChangeNotifier {
   StreamSubscription? _expensesSub;
   StreamSubscription? _activitiesSub;
   StreamSubscription? _notificationsSub;
-  bool _isSeeding = false;
+
+  // Legacy test data IDs to filter and purge
+  static const Set<String> _legacyMockUserIds = {
+    'usr_me',
+    'usr_rahul',
+    'usr_priya',
+    'usr_amit',
+    'usr_sneha',
+  };
+  static const Set<String> _legacyMockGroupIds = {
+    'grp_apt',
+    'grp_goa',
+  };
+  static const Set<String> _legacyMockExpenseIds = {
+    'exp_1',
+    'exp_2',
+    'exp_3',
+    'exp_4',
+  };
+  static const Set<String> _legacyMockNotifIds = {
+    'notif_1',
+    'notif_2',
+    'notif_3',
+    'notif_4',
+  };
+  static const Set<String> _legacyMockActivityIds = {
+    'act_1',
+    'act_2',
+  };
 
   SplitwiseProvider() {
-    _initDemoData();
+    _initAuth();
     _initFirestoreSync();
   }
 
-  User get currentUser => _currentUser;
+  // Getters
+  bool get isAuthLoading => _isAuthLoading;
+  bool get isAuthenticated => _currentUser != null;
+  User get currentUser =>
+      _currentUser ?? const User(id: '', name: 'Guest', email: '');
   List<User> get users => List.unmodifiable(_users);
   List<User> get friends =>
-      _users.where((u) => u.id != _currentUser.id).toList();
+      _users.where((u) => u.id != (_currentUser?.id ?? '')).toList();
   List<Group> get groups => List.unmodifiable(_groups);
   List<Expense> get expenses => List.unmodifiable(_expenses);
   List<ActivityItem> get activities =>
       List.unmodifiable(_activities..sort((a, b) => b.timestamp.compareTo(a.timestamp)));
   List<AppNotification> get notifications =>
       List.unmodifiable(_notifications..sort((a, b) => b.timestamp.compareTo(a.timestamp)));
-  int get unreadNotificationCount =>
-      _notifications.where((n) => !n.isRead && n.recipientUserId == _currentUser.id).length;
+  int get unreadNotificationCount => _notifications
+      .where((n) => !n.isRead && n.recipientUserId == (_currentUser?.id ?? ''))
+      .length;
   int get totalUnreadAllMembersCount =>
       _notifications.where((n) => !n.isRead).length;
   String get currency => _currency;
@@ -59,9 +94,14 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   void switchCurrentUser(String userId) {
-    final user = _users.firstWhere((u) => u.id == userId, orElse: () => _currentUser);
-    _currentUser = user;
-    notifyListeners();
+    final user = _users.where((u) => u.id == userId).firstOrNull;
+    if (user != null) {
+      _currentUser = user;
+      SharedPreferences.getInstance().then((prefs) {
+        prefs.setString('active_user_id', user.id);
+      });
+      notifyListeners();
+    }
   }
 
   User? getUser(String userId) {
@@ -80,6 +120,275 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
+  // ==========================================
+  // AUTHENTICATION & SESSION PERSISTENCE
+  // ==========================================
+
+  Future<void> _initAuth() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedUserId = prefs.getString('active_user_id');
+      if (savedUserId != null && savedUserId.isNotEmpty) {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(savedUserId)
+            .get();
+        if (doc.exists && doc.data() != null) {
+          _currentUser = User.fromJson(doc.data()!);
+        } else {
+          final user = _users.where((u) => u.id == savedUserId).firstOrNull;
+          if (user != null) _currentUser = user;
+        }
+      }
+    } catch (e) {
+      debugPrint('Auth initialization error: $e');
+    } finally {
+      _isAuthLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<String?> register({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    final cleanName = name.trim();
+    final cleanEmail = email.trim().toLowerCase();
+    if (cleanName.isEmpty) return 'Please enter your full name.';
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
+      return 'Please enter a valid email address.';
+    }
+    if (password.length < 6) {
+      return 'Password must be at least 6 characters.';
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final existing = await firestore
+          .collection('users')
+          .where('email', isEqualTo: cleanEmail)
+          .limit(1)
+          .get();
+
+      if (existing.docs.isNotEmpty) {
+        return 'An account with this email already exists. Please log in.';
+      }
+
+      final newUser = User(
+        id: _uuid.v4(),
+        name: cleanName,
+        email: cleanEmail,
+        password: password,
+        createdAt: DateTime.now(),
+      );
+
+      await firestore
+          .collection('users')
+          .doc(newUser.id)
+          .set(newUser.toJson());
+
+      // Welcome activity
+      final welcomeAct = ActivityItem(
+        id: _uuid.v4(),
+        title: 'Welcome to SplitIt, $cleanName!',
+        subtitle: 'Account created. You can now create groups, add friends & split bills.',
+        timestamp: DateTime.now(),
+      );
+      firestore
+          .collection('activities')
+          .doc(welcomeAct.id)
+          .set(welcomeAct.toJson())
+          .catchError((_) {});
+
+      _currentUser = newUser;
+      if (!_users.any((u) => u.id == newUser.id)) {
+        _users.add(newUser);
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('active_user_id', newUser.id);
+
+      notifyListeners();
+      return null;
+    } catch (e) {
+      debugPrint('Registration exception: $e');
+      return 'Registration failed: $e';
+    }
+  }
+
+  Future<String?> login({
+    required String email,
+    required String password,
+  }) async {
+    final cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
+      return 'Please enter a valid email address.';
+    }
+    if (password.isEmpty) {
+      return 'Please enter your password.';
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final snap = await firestore
+          .collection('users')
+          .where('email', isEqualTo: cleanEmail)
+          .limit(1)
+          .get();
+
+      if (snap.docs.isEmpty) {
+        final inMem = _users
+            .where((u) => u.email.toLowerCase() == cleanEmail)
+            .firstOrNull;
+        if (inMem == null) {
+          return 'No account found with this email. Please register.';
+        }
+        if (inMem.password != null && inMem.password != password) {
+          return 'Incorrect password. Please try again.';
+        }
+        _currentUser = inMem;
+      } else {
+        final userData = snap.docs.first.data();
+        final user = User.fromJson(userData);
+        if (user.password != null && user.password != password) {
+          return 'Incorrect password. Please try again.';
+        }
+        _currentUser = user;
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('active_user_id', _currentUser!.id);
+
+      notifyListeners();
+      return null;
+    } catch (e) {
+      debugPrint('Login exception: $e');
+      return 'Login failed: $e';
+    }
+  }
+
+  Future<void> logout() async {
+    _currentUser = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('active_user_id');
+    notifyListeners();
+  }
+
+  // ==========================================
+  // PURGE LEGACY TESTING DATA
+  // ==========================================
+
+  Future<void> purgeLegacyTestData() async {
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+
+      for (final id in _legacyMockUserIds) {
+        batch.delete(firestore.collection('users').doc(id));
+      }
+      for (final id in _legacyMockGroupIds) {
+        batch.delete(firestore.collection('groups').doc(id));
+      }
+      for (final id in _legacyMockExpenseIds) {
+        batch.delete(firestore.collection('expenses').doc(id));
+      }
+      for (final id in _legacyMockActivityIds) {
+        batch.delete(firestore.collection('activities').doc(id));
+      }
+      for (final id in _legacyMockNotifIds) {
+        batch.delete(firestore.collection('notifications').doc(id));
+      }
+
+      await batch.commit();
+      debugPrint('Legacy testing data successfully purged from Firestore.');
+    } catch (e) {
+      debugPrint('Error purging legacy test data: $e');
+    }
+
+    _users.removeWhere((u) => _legacyMockUserIds.contains(u.id));
+    _groups.removeWhere((g) => _legacyMockGroupIds.contains(g.id));
+    _expenses.removeWhere((e) => _legacyMockExpenseIds.contains(e.id));
+    _activities.removeWhere((a) => _legacyMockActivityIds.contains(a.id));
+    _notifications.removeWhere((n) => _legacyMockNotifIds.contains(n.id));
+    notifyListeners();
+  }
+
+  // ==========================================
+  // FIRESTORE SYNC & STREAMS
+  // ==========================================
+
+  void _initFirestoreSync() {
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      purgeLegacyTestData();
+
+      _usersSub = firestore.collection('users').snapshots().listen((snap) {
+        final newUsers = snap.docs
+            .map((d) => User.fromJson(d.data()))
+            .where((u) => !_legacyMockUserIds.contains(u.id))
+            .toList();
+        _users.clear();
+        _users.addAll(newUsers);
+
+        if (_currentUser != null) {
+          final matched = _users.where((u) => u.id == _currentUser!.id).firstOrNull;
+          if (matched != null) {
+            _currentUser = matched;
+          }
+        }
+        notifyListeners();
+      }, onError: (e) => debugPrint('Users stream error: $e'));
+
+      _groupsSub = firestore.collection('groups').snapshots().listen((snap) {
+        final newGroups = snap.docs
+            .map((d) => Group.fromJson(d.data()))
+            .where((g) => !_legacyMockGroupIds.contains(g.id))
+            .toList();
+        _groups.clear();
+        _groups.addAll(newGroups);
+        notifyListeners();
+      }, onError: (e) => debugPrint('Groups stream error: $e'));
+
+      _expensesSub = firestore.collection('expenses').snapshots().listen((snap) {
+        final newExpenses = snap.docs
+            .map((d) => Expense.fromJson(d.data()))
+            .where((e) => !_legacyMockExpenseIds.contains(e.id))
+            .toList();
+        _expenses.clear();
+        _expenses.addAll(newExpenses);
+        notifyListeners();
+      }, onError: (e) => debugPrint('Expenses stream error: $e'));
+
+      _activitiesSub = firestore.collection('activities').snapshots().listen((snap) {
+        final newActivities = snap.docs
+            .map((d) => ActivityItem.fromJson(d.data()))
+            .where((a) => !_legacyMockActivityIds.contains(a.id))
+            .toList();
+        _activities.clear();
+        _activities.addAll(newActivities);
+        notifyListeners();
+      }, onError: (e) => debugPrint('Activities stream error: $e'));
+
+      _notificationsSub = firestore.collection('notifications').snapshots().listen((snap) {
+        final newNotifs = snap.docs
+            .map((d) => AppNotification.fromJson(d.data()))
+            .where((n) => !_legacyMockNotifIds.contains(n.id))
+            .toList();
+        _notifications.clear();
+        _notifications.addAll(newNotifs);
+        notifyListeners();
+      }, onError: (e) => debugPrint('Notifications stream error: $e'));
+    } catch (e) {
+      debugPrint('Firestore initialization error: $e');
+    }
+  }
+
+  // ==========================================
+  // EXPENSES & BALANCES
+  // ==========================================
+
   List<Expense> getExpensesForGroup(String groupId) {
     final list = _expenses.where((e) => e.groupId == groupId).toList();
     list.sort((a, b) => b.date.compareTo(a.date));
@@ -87,22 +396,21 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   List<Expense> getExpensesWithFriend(String friendId) {
+    final myId = _currentUser?.id ?? '';
     final list = _expenses.where((e) {
-      final isPayer = e.paidByUserId == friendId || e.paidByUserId == _currentUser.id;
-      final isParticipant = e.splitShares.containsKey(friendId) &&
-          e.splitShares.containsKey(_currentUser.id);
-      return isPayer && (isParticipant || e.paidByUserId != _currentUser.id);
+      final isPayer = e.paidByUserId == friendId || e.paidByUserId == myId;
+      final isParticipant =
+          e.splitShares.containsKey(friendId) && e.splitShares.containsKey(myId);
+      return isPayer && (isParticipant || e.paidByUserId != myId);
     }).toList();
     list.sort((a, b) => b.date.compareTo(a.date));
     return list;
   }
 
-  // Calculate overall balance for a user: { 'owed': 450.0, 'owe': 120.0, 'net': 330.0 }
   Map<String, double> getUserOverallBalance(String userId) {
     final net = DebtSimplifier.computeNetBalances(expenses: _expenses);
     final userNet = net[userId] ?? 0.0;
 
-    // Direct debts involving this user across all friends
     final debts = DebtSimplifier.computePairwiseDebts(_expenses);
     double totalYouAreOwed = 0.0;
     double totalYouOwe = 0.0;
@@ -122,21 +430,20 @@ class SplitwiseProvider extends ChangeNotifier {
     };
   }
 
-  // Get net balance between current user and a specific friend
   double getBalanceWithFriend(String friendId) {
+    final myId = _currentUser?.id ?? '';
     final debts = DebtSimplifier.computePairwiseDebts(_expenses);
     double balance = 0.0;
     for (final d in debts) {
-      if (d.toUserId == _currentUser.id && d.fromUserId == friendId) {
-        balance += d.amount; // friend owes you
-      } else if (d.fromUserId == _currentUser.id && d.toUserId == friendId) {
-        balance -= d.amount; // you owe friend
+      if (d.toUserId == myId && d.fromUserId == friendId) {
+        balance += d.amount;
+      } else if (d.fromUserId == myId && d.toUserId == friendId) {
+        balance -= d.amount;
       }
     }
     return double.parse(balance.toStringAsFixed(2));
   }
 
-  // Get group debts (either simplified or pairwise)
   List<Debt> getGroupDebts(String groupId, {bool? forceSimplify}) {
     final group = getGroup(groupId);
     if (group == null) return [];
@@ -155,96 +462,6 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
-  // Real-time Firestore sync setup
-  void _initFirestoreSync() {
-    try {
-      final firestore = FirebaseFirestore.instance;
-
-      firestore.collection('users').get().then((snapshot) {
-        if (snapshot.docs.isEmpty && !_isSeeding) {
-          _isSeeding = true;
-          _seedInitialFirestoreData(firestore);
-        }
-      }).catchError((e) {
-        debugPrint('Firestore seed check error: $e');
-      });
-
-      _usersSub = firestore.collection('users').snapshots().listen((snap) {
-        if (snap.docs.isNotEmpty) {
-          final newUsers = snap.docs.map((d) => User.fromJson(d.data())).toList();
-          _users.clear();
-          _users.addAll(newUsers);
-          try {
-            _currentUser = _users.firstWhere((u) => u.id == _currentUser.id);
-          } catch (_) {
-            if (_users.isNotEmpty) _currentUser = _users.first;
-          }
-          notifyListeners();
-        }
-      }, onError: (e) => debugPrint('Users stream error: $e'));
-
-      _groupsSub = firestore.collection('groups').snapshots().listen((snap) {
-        if (snap.docs.isNotEmpty) {
-          _groups.clear();
-          _groups.addAll(snap.docs.map((d) => Group.fromJson(d.data())));
-          notifyListeners();
-        }
-      }, onError: (e) => debugPrint('Groups stream error: $e'));
-
-      _expensesSub = firestore.collection('expenses').snapshots().listen((snap) {
-        if (snap.docs.isNotEmpty) {
-          _expenses.clear();
-          _expenses.addAll(snap.docs.map((d) => Expense.fromJson(d.data())));
-          notifyListeners();
-        }
-      }, onError: (e) => debugPrint('Expenses stream error: $e'));
-
-      _activitiesSub = firestore.collection('activities').snapshots().listen((snap) {
-        if (snap.docs.isNotEmpty) {
-          _activities.clear();
-          _activities.addAll(snap.docs.map((d) => ActivityItem.fromJson(d.data())));
-          notifyListeners();
-        }
-      }, onError: (e) => debugPrint('Activities stream error: $e'));
-
-      _notificationsSub = firestore.collection('notifications').snapshots().listen((snap) {
-        if (snap.docs.isNotEmpty) {
-          _notifications.clear();
-          _notifications.addAll(snap.docs.map((d) => AppNotification.fromJson(d.data())));
-          notifyListeners();
-        }
-      }, onError: (e) => debugPrint('Notifications stream error: $e'));
-    } catch (e) {
-      debugPrint('Firestore initialization error: $e');
-    }
-  }
-
-  Future<void> _seedInitialFirestoreData(FirebaseFirestore firestore) async {
-    final batch = firestore.batch();
-    for (final u in _users) {
-      batch.set(firestore.collection('users').doc(u.id), u.toJson());
-    }
-    for (final g in _groups) {
-      batch.set(firestore.collection('groups').doc(g.id), g.toJson());
-    }
-    for (final e in _expenses) {
-      batch.set(firestore.collection('expenses').doc(e.id), e.toJson());
-    }
-    for (final a in _activities) {
-      batch.set(firestore.collection('activities').doc(a.id), a.toJson());
-    }
-    for (final n in _notifications) {
-      batch.set(firestore.collection('notifications').doc(n.id), n.toJson());
-    }
-    try {
-      await batch.commit();
-      debugPrint('Firestore successfully seeded with initial data.');
-    } catch (e) {
-      debugPrint('Firestore seed batch commit failed: $e');
-    }
-  }
-
-  // Add new expense
   void addExpense({
     String? groupId,
     required String description,
@@ -282,7 +499,6 @@ class SplitwiseProvider extends ChangeNotifier {
     );
     _activities.add(activityItem);
 
-    // Dispatch notification to ALL group members (or split participants)
     final recipients = <String>{};
     if (group != null) {
       recipients.addAll(group.memberIds);
@@ -324,7 +540,6 @@ class SplitwiseProvider extends ChangeNotifier {
 
     notifyListeners();
 
-    // Sync to Firestore
     try {
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
@@ -339,7 +554,6 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
-  // Settle up payment between two users
   void settleUp({
     required String fromUserId,
     required String toUserId,
@@ -375,7 +589,6 @@ class SplitwiseProvider extends ChangeNotifier {
     );
     _activities.add(activityItem);
 
-    // Dispatch notification to ALL group members
     final group = groupId != null ? getGroup(groupId) : null;
     final recipients = <String>{fromUserId, toUserId};
     if (group != null) {
@@ -416,7 +629,6 @@ class SplitwiseProvider extends ChangeNotifier {
 
     notifyListeners();
 
-    // Sync to Firestore
     try {
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
@@ -480,7 +692,8 @@ class SplitwiseProvider extends ChangeNotifier {
     required List<String> memberIds,
     bool simplifyByDefault = true,
   }) {
-    final allMembers = {...memberIds, _currentUser.id}.toList();
+    final myId = _currentUser?.id ?? '';
+    final allMembers = {...memberIds, if (myId.isNotEmpty) myId}.toList();
     final newGroup = Group(
       id: _uuid.v4(),
       name: name,
@@ -499,12 +712,11 @@ class SplitwiseProvider extends ChangeNotifier {
     );
     _activities.add(activityItem);
 
-    // Dispatch notification to ALL members added to the group
     final newNotifs = <AppNotification>[];
     for (final memberId in allMembers) {
       final member = getUser(memberId);
       if (member == null) continue;
-      final isCreator = memberId == _currentUser.id;
+      final isCreator = memberId == myId;
 
       final notif = AppNotification(
         id: _uuid.v4(),
@@ -514,7 +726,7 @@ class SplitwiseProvider extends ChangeNotifier {
         title: isCreator
             ? 'You created group "$name"'
             : 'You were added to group "$name"',
-        body: '${allMembers.length} members were added to $name ($groupType).',
+        body: '${allMembers.length} members in $name ($groupType).',
         timestamp: DateTime.now(),
         groupId: newGroup.id,
         groupName: newGroup.name,
@@ -539,6 +751,122 @@ class SplitwiseProvider extends ChangeNotifier {
       debugPrint('Firestore createGroup exception: $e');
     }
   }
+
+  // EXIT GROUP / LEAVE GROUP (e.g. Added Unintentionally)
+  Future<String?> exitGroup({
+    required String groupId,
+    required String userId,
+  }) async {
+    final group = getGroup(groupId);
+    if (group == null) return 'Group not found';
+
+    final user = getUser(userId) ?? _currentUser;
+    final userName = user?.name ?? 'Member';
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final updatedMembers = List<String>.from(group.memberIds)..remove(userId);
+
+      final batch = firestore.batch();
+
+      if (updatedMembers.isEmpty) {
+        batch.delete(firestore.collection('groups').doc(groupId));
+        _groups.removeWhere((g) => g.id == groupId);
+      } else {
+        batch.update(firestore.collection('groups').doc(groupId), {
+          'memberIds': updatedMembers,
+        });
+        final idx = _groups.indexWhere((g) => g.id == groupId);
+        if (idx != -1) {
+          _groups[idx] = group.copyWith(memberIds: updatedMembers);
+        }
+      }
+
+      final act = ActivityItem(
+        id: _uuid.v4(),
+        title: '$userName left group "${group.name}"',
+        subtitle: '${updatedMembers.length} members remaining',
+        timestamp: DateTime.now(),
+      );
+      batch.set(firestore.collection('activities').doc(act.id), act.toJson());
+      _activities.add(act);
+
+      for (final remId in updatedMembers) {
+        final remUser = getUser(remId);
+        if (remUser == null) continue;
+        final notif = AppNotification(
+          id: _uuid.v4(),
+          recipientUserId: remId,
+          recipientName: remUser.name,
+          recipientEmail: remUser.email,
+          title: '$userName left "${group.name}"',
+          body: '$userName has exited the group.',
+          timestamp: DateTime.now(),
+          groupId: groupId,
+          groupName: group.name,
+          type: 'member_left',
+        );
+        batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
+        _notifications.add(notif);
+      }
+
+      await batch.commit();
+      notifyListeners();
+      return null;
+    } catch (e) {
+      debugPrint('exitGroup error: $e');
+      return 'Failed to exit group: $e';
+    }
+  }
+
+  // Remove a member (e.g. creator removing unintentional member)
+  Future<String?> removeMemberFromGroup({
+    required String groupId,
+    required String memberId,
+  }) async {
+    return exitGroup(groupId: groupId, userId: memberId);
+  }
+
+  // ==========================================
+  // SEARCH FUNCTIONALITY (SPLITWISE OMNI-SEARCH)
+  // ==========================================
+
+  List<Group> searchGroups(String query) {
+    if (query.trim().isEmpty) return [];
+    final q = query.trim().toLowerCase();
+    return _groups.where((g) {
+      return g.name.toLowerCase().contains(q) ||
+          g.groupType.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  List<User> searchUsers(String query) {
+    if (query.trim().isEmpty) return [];
+    final q = query.trim().toLowerCase();
+    final myId = _currentUser?.id ?? '';
+    return _users.where((u) {
+      return u.id != myId &&
+          (u.name.toLowerCase().contains(q) ||
+              u.email.toLowerCase().contains(q));
+    }).toList();
+  }
+
+  List<Expense> searchExpenses(String query) {
+    if (query.trim().isEmpty) return [];
+    final q = query.trim().toLowerCase();
+    return _expenses.where((e) {
+      final payer = getUser(e.paidByUserId)?.name ?? '';
+      return e.description.toLowerCase().contains(q) ||
+          e.category.toLowerCase().contains(q) ||
+          (e.notes?.toLowerCase().contains(q) ?? false) ||
+          payer.toLowerCase().contains(q) ||
+          e.cost.toString().contains(q);
+    }).toList();
+  }
+
+  // ==========================================
+  // NOTIFICATIONS & FRIENDS
+  // ==========================================
 
   void markAllNotificationsAsRead() {
     for (final n in _notifications) {
@@ -598,7 +926,8 @@ class SplitwiseProvider extends ChangeNotifier {
     final newFriend = User(
       id: _uuid.v4(),
       name: name,
-      email: email,
+      email: email.trim().toLowerCase(),
+      createdAt: DateTime.now(),
     );
     _users.add(newFriend);
 
@@ -621,190 +950,6 @@ class SplitwiseProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('Firestore addFriend exception: $e');
     }
-  }
-
-  void _initDemoData() {
-    _currentUser = const User(
-      id: 'usr_me',
-      name: 'You',
-      email: 'you@splitwise.clone',
-    );
-
-    final u1 = const User(
-      id: 'usr_rahul',
-      name: 'Rahul Sharma',
-      email: 'rahul@example.com',
-    );
-    final u2 = const User(
-      id: 'usr_priya',
-      name: 'Priya Patel',
-      email: 'priya@example.com',
-    );
-    final u3 = const User(
-      id: 'usr_amit',
-      name: 'Amit Verma',
-      email: 'amit@example.com',
-    );
-    final u4 = const User(
-      id: 'usr_sneha',
-      name: 'Sneha Rao',
-      email: 'sneha@example.com',
-    );
-
-    _users.addAll([_currentUser, u1, u2, u3, u4]);
-
-    final g1 = Group(
-      id: 'grp_apt',
-      name: 'Apartment 402',
-      groupType: 'home',
-      memberIds: [_currentUser.id, u1.id, u2.id],
-      simplifyByDefault: true,
-    );
-
-    final g2 = Group(
-      id: 'grp_goa',
-      name: 'Goa Trip 2026',
-      groupType: 'trip',
-      memberIds: [_currentUser.id, u1.id, u2.id, u3.id, u4.id],
-      simplifyByDefault: true,
-    );
-
-    _groups.addAll([g1, g2]);
-
-    // Initial expenses
-    _expenses.addAll([
-      Expense(
-        id: 'exp_1',
-        groupId: g1.id,
-        description: 'WiFi & Fiber Internet',
-        cost: 1500.0,
-        date: DateTime.now().subtract(const Duration(days: 4)),
-        paidByUserId: _currentUser.id,
-        category: 'Utilities',
-        splitShares: {
-          _currentUser.id: 500.0,
-          u1.id: 500.0,
-          u2.id: 500.0,
-        },
-      ),
-      Expense(
-        id: 'exp_2',
-        groupId: g1.id,
-        description: 'Groceries & Milk',
-        cost: 900.0,
-        date: DateTime.now().subtract(const Duration(days: 3)),
-        paidByUserId: u1.id,
-        category: 'Groceries',
-        splitShares: {
-          _currentUser.id: 300.0,
-          u1.id: 300.0,
-          u2.id: 300.0,
-        },
-      ),
-      Expense(
-        id: 'exp_3',
-        groupId: g2.id,
-        description: 'Resort Booking Deposit',
-        cost: 10000.0,
-        date: DateTime.now().subtract(const Duration(days: 2)),
-        paidByUserId: _currentUser.id,
-        category: 'Travel',
-        splitShares: {
-          _currentUser.id: 2000.0,
-          u1.id: 2000.0,
-          u2.id: 2000.0,
-          u3.id: 2000.0,
-          u4.id: 2000.0,
-        },
-      ),
-      Expense(
-        id: 'exp_4',
-        groupId: g2.id,
-        description: 'Beach Shack Seafood Dinner',
-        cost: 4500.0,
-        date: DateTime.now().subtract(const Duration(days: 1)),
-        paidByUserId: u3.id,
-        category: 'Food & Drink',
-        splitShares: {
-          _currentUser.id: 900.0,
-          u1.id: 900.0,
-          u2.id: 900.0,
-          u3.id: 900.0,
-          u4.id: 900.0,
-        },
-      ),
-    ]);
-
-    _activities.addAll([
-      ActivityItem(
-        id: 'act_1',
-        title: 'You added "Resort Booking Deposit"',
-        subtitle: 'Goa Trip 2026 • ₹10,000.00',
-        timestamp: DateTime.now().subtract(const Duration(days: 2)),
-      ),
-      ActivityItem(
-        id: 'act_2',
-        title: 'Amit Verma added "Beach Shack Seafood Dinner"',
-        subtitle: 'Goa Trip 2026 • ₹4,500.00',
-        timestamp: DateTime.now().subtract(const Duration(days: 1)),
-      ),
-    ]);
-
-    // Initial group notification broadcasts
-    _notifications.addAll([
-      AppNotification(
-        id: 'notif_1',
-        recipientUserId: _currentUser.id,
-        recipientName: _currentUser.name,
-        recipientEmail: _currentUser.email,
-        title: 'Amit Verma added an expense in "Goa Trip 2026"',
-        body: 'Amit Verma added "Beach Shack Seafood Dinner" (₹4,500.00). Your share is ₹900.00.',
-        timestamp: DateTime.now().subtract(const Duration(hours: 3)),
-        groupId: g2.id,
-        groupName: g2.name,
-        type: 'expense_added',
-        isRead: false,
-      ),
-      AppNotification(
-        id: 'notif_2',
-        recipientUserId: u1.id,
-        recipientName: u1.name,
-        recipientEmail: u1.email,
-        title: 'Amit Verma added an expense in "Goa Trip 2026"',
-        body: 'Amit Verma added "Beach Shack Seafood Dinner" (₹4,500.00). Your share is ₹900.00.',
-        timestamp: DateTime.now().subtract(const Duration(hours: 3)),
-        groupId: g2.id,
-        groupName: g2.name,
-        type: 'expense_added',
-        isRead: false,
-      ),
-      AppNotification(
-        id: 'notif_3',
-        recipientUserId: u2.id,
-        recipientName: u2.name,
-        recipientEmail: u2.email,
-        title: 'Amit Verma added an expense in "Goa Trip 2026"',
-        body: 'Amit Verma added "Beach Shack Seafood Dinner" (₹4,500.00). Your share is ₹900.00.',
-        timestamp: DateTime.now().subtract(const Duration(hours: 3)),
-        groupId: g2.id,
-        groupName: g2.name,
-        type: 'expense_added',
-        isRead: false,
-      ),
-      AppNotification(
-        id: 'notif_4',
-        recipientUserId: _currentUser.id,
-        recipientName: _currentUser.name,
-        recipientEmail: _currentUser.email,
-        title: 'Rahul Sharma paid you',
-        body: 'Rahul Sharma recorded a payment of ₹300.00 to settle up in "Apartment 402".',
-        timestamp: DateTime.now().subtract(const Duration(days: 1)),
-        groupId: g1.id,
-        groupName: g1.name,
-        type: 'payment_settled',
-        isRead: true,
-      ),
-    ]);
   }
 
   @override
