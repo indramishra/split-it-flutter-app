@@ -280,8 +280,12 @@ class SplitwiseProvider extends ChangeNotifier {
         _users.add(newUser);
       }
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('active_user_id', newUser.id);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('active_user_id', newUser.id);
+      } catch (prefErr) {
+        debugPrint('Failed to save session to SharedPreferences: $prefErr');
+      }
 
       // Native phone notification with verification code
       NotificationService().showEmailVerificationNotification(
@@ -337,8 +341,12 @@ class SplitwiseProvider extends ChangeNotifier {
         _currentUser = user;
       }
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('active_user_id', _currentUser!.id);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('active_user_id', _currentUser!.id);
+      } catch (prefErr) {
+        debugPrint('Failed to save session to SharedPreferences: $prefErr');
+      }
 
       if (_currentUser != null && !_currentUser!.isEmailVerified) {
         if (_currentUser!.verificationCode == null) {
@@ -361,8 +369,12 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<void> logout() async {
     _currentUser = null;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('active_user_id');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('active_user_id');
+    } catch (prefErr) {
+      debugPrint('Failed to clear session in SharedPreferences: $prefErr');
+    }
     notifyListeners();
   }
 
