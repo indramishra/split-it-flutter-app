@@ -58,6 +58,8 @@ class ActivityItem {
   final String subtitle;
   final DateTime timestamp;
   final String? expenseId;
+  final String? groupId;
+  final String? userId;
 
   ActivityItem({
     required this.id,
@@ -65,6 +67,8 @@ class ActivityItem {
     required this.subtitle,
     required this.timestamp,
     this.expenseId,
+    this.groupId,
+    this.userId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -73,6 +77,8 @@ class ActivityItem {
         'subtitle': subtitle,
         'timestamp': timestamp.toIso8601String(),
         'expenseId': expenseId,
+        'groupId': groupId,
+        'userId': userId,
       };
 
   factory ActivityItem.fromJson(Map<String, dynamic> json) => ActivityItem(
@@ -83,5 +89,7 @@ class ActivityItem {
             ? DateTime.parse(json['timestamp'] as String)
             : DateTime.now(),
         expenseId: json['expenseId'] as String?,
+        groupId: json['groupId'] as String?,
+        userId: json['userId'] as String?,
       );
 }

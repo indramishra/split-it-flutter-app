@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -8,6 +9,7 @@ import '../models/group.dart';
 import '../models/expense.dart';
 import '../models/notification_model.dart';
 import '../services/debt_simplifier.dart';
+import '../services/notification_service.dart';
 
 class SplitwiseProvider extends ChangeNotifier {
   final _uuid = const Uuid();
@@ -75,12 +77,61 @@ class SplitwiseProvider extends ChangeNotifier {
   List<User> get users => List.unmodifiable(_users);
   List<User> get friends =>
       _users.where((u) => u.id != (_currentUser?.id ?? '')).toList();
-  List<Group> get groups => List.unmodifiable(_groups);
+  // Scoped to groups the current user is a member of
+  List<Group> get groups {
+    final myId = _currentUser?.id ?? '';
+    if (myId.isEmpty) return const [];
+    return List.unmodifiable(
+        _groups.where((g) => g.memberIds.contains(myId)).toList());
+  }
+
+  // Unscoped list of all groups if needed internally
+  List<Group> get allGroups => List.unmodifiable(_groups);
+
   List<Expense> get expenses => List.unmodifiable(_expenses);
-  List<ActivityItem> get activities =>
-      List.unmodifiable(_activities..sort((a, b) => b.timestamp.compareTo(a.timestamp)));
-  List<AppNotification> get notifications =>
-      List.unmodifiable(_notifications..sort((a, b) => b.timestamp.compareTo(a.timestamp)));
+
+  List<ActivityItem> get activities {
+    final myId = _currentUser?.id ?? '';
+    if (myId.isEmpty) return const [];
+    final myGroupIds = groups.map((g) => g.id).toSet();
+    return List.unmodifiable(
+      _activities.where((a) {
+        if (a.userId != null && a.userId == myId) return true;
+        if (a.groupId != null && myGroupIds.contains(a.groupId)) return true;
+        if (a.expenseId != null) {
+          final exp = _expenses.where((e) => e.id == a.expenseId).firstOrNull;
+          if (exp != null) {
+            return exp.paidByUserId == myId ||
+                exp.splitShares.containsKey(myId) ||
+                myGroupIds.contains(exp.groupId);
+          }
+        }
+        if (a.userId == null && a.groupId == null && a.expenseId == null) {
+          final myName = _currentUser?.name ?? '';
+          if (myName.isNotEmpty &&
+              (a.title.contains(myName) || a.subtitle.contains(myName))) {
+            return true;
+          }
+        }
+        return false;
+      }).toList()
+        ..sort((a, b) => b.timestamp.compareTo(a.timestamp)),
+    );
+  }
+
+  List<AppNotification> get notifications {
+    final myId = _currentUser?.id ?? '';
+    if (myId.isEmpty) return const [];
+    final myGroupIds = groups.map((g) => g.id).toSet();
+    return List.unmodifiable(
+      _notifications.where((n) {
+        return n.recipientUserId == myId ||
+            (n.groupId != null && myGroupIds.contains(n.groupId));
+      }).toList()
+        ..sort((a, b) => b.timestamp.compareTo(a.timestamp)),
+    );
+  }
+
   int get unreadNotificationCount => _notifications
       .where((n) => !n.isRead && n.recipientUserId == (_currentUser?.id ?? ''))
       .length;
@@ -175,11 +226,15 @@ class SplitwiseProvider extends ChangeNotifier {
         return 'An account with this email already exists. Please log in.';
       }
 
+      final code = (100000 + Random().nextInt(900000)).toString();
       final newUser = User(
         id: _uuid.v4(),
         name: cleanName,
         email: cleanEmail,
         password: password,
+        isEmailVerified: false,
+        verificationCode: code,
+        verificationCodeSentAt: DateTime.now(),
         createdAt: DateTime.now(),
       );
 
@@ -192,14 +247,33 @@ class SplitwiseProvider extends ChangeNotifier {
       final welcomeAct = ActivityItem(
         id: _uuid.v4(),
         title: 'Welcome to SplitIt, $cleanName!',
-        subtitle: 'Account created. You can now create groups, add friends & split bills.',
+        subtitle: 'Account created. Verification code sent to email & phone.',
         timestamp: DateTime.now(),
+        userId: newUser.id,
       );
       firestore
           .collection('activities')
           .doc(welcomeAct.id)
           .set(welcomeAct.toJson())
           .catchError((_) {});
+
+      // Verification notification
+      final verifyNotif = AppNotification(
+        id: _uuid.v4(),
+        recipientUserId: newUser.id,
+        recipientName: newUser.name,
+        recipientEmail: newUser.email,
+        title: 'SplitIt Verification Code: $code',
+        body: 'Welcome to SplitIt! Your 6-digit verification code is $code. Enter it in the app to activate your account.',
+        timestamp: DateTime.now(),
+        type: 'email_verification',
+      );
+      firestore
+          .collection('notifications')
+          .doc(verifyNotif.id)
+          .set(verifyNotif.toJson())
+          .catchError((_) {});
+      _notifications.add(verifyNotif);
 
       _currentUser = newUser;
       if (!_users.any((u) => u.id == newUser.id)) {
@@ -208,6 +282,12 @@ class SplitwiseProvider extends ChangeNotifier {
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('active_user_id', newUser.id);
+
+      // Native phone notification with verification code
+      NotificationService().showEmailVerificationNotification(
+        email: newUser.email,
+        code: code,
+      );
 
       notifyListeners();
       return null;
@@ -260,6 +340,17 @@ class SplitwiseProvider extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('active_user_id', _currentUser!.id);
 
+      if (_currentUser != null && !_currentUser!.isEmailVerified) {
+        if (_currentUser!.verificationCode == null) {
+          sendEmailVerificationCode();
+        } else {
+          NotificationService().showEmailVerificationNotification(
+            email: _currentUser!.email,
+            code: _currentUser!.verificationCode!,
+          );
+        }
+      }
+
       notifyListeners();
       return null;
     } catch (e) {
@@ -273,6 +364,106 @@ class SplitwiseProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('active_user_id');
     notifyListeners();
+  }
+
+  // ==========================================
+  // NOTIFICATION PERMISSIONS & EMAIL VERIFICATION
+  // ==========================================
+
+  Future<bool> requestNotificationPermission() async {
+    return await NotificationService().requestPermissions();
+  }
+
+  Future<String?> sendEmailVerificationCode() async {
+    if (_currentUser == null) return 'No user is currently signed in.';
+    final code = (100000 + Random().nextInt(900000)).toString();
+    final updatedUser = _currentUser!.copyWith(
+      verificationCode: code,
+      verificationCodeSentAt: DateTime.now(),
+    );
+    _currentUser = updatedUser;
+
+    final notif = AppNotification(
+      id: _uuid.v4(),
+      recipientUserId: updatedUser.id,
+      recipientName: updatedUser.name,
+      recipientEmail: updatedUser.email,
+      title: 'SplitIt Verification Code: $code',
+      body: 'Your 6-digit verification code is $code. Enter it in the app to activate your account.',
+      timestamp: DateTime.now(),
+      type: 'email_verification',
+    );
+    _notifications.add(notif);
+
+    notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'verificationCode': code,
+        'verificationCodeSentAt': DateTime.now().toIso8601String(),
+      });
+      batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
+      await batch.commit();
+
+      await NotificationService().showEmailVerificationNotification(
+        email: updatedUser.email,
+        code: code,
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Error sending verification code: $e');
+      return 'Failed to send verification code: $e';
+    }
+  }
+
+  Future<String?> verifyEmail(String code) async {
+    if (_currentUser == null) return 'No user is currently signed in.';
+    final cleanCode = code.trim();
+    final userCode = _currentUser!.verificationCode?.trim();
+
+    if (userCode != null && userCode.isNotEmpty && userCode != cleanCode) {
+      return 'Invalid verification code. Please check your notification or enter the 6 digits sent to you.';
+    }
+
+    final updatedUser = _currentUser!.copyWith(
+      isEmailVerified: true,
+      verificationCode: null,
+    );
+    _currentUser = updatedUser;
+
+    final verifyAct = ActivityItem(
+      id: _uuid.v4(),
+      title: 'Email verified',
+      subtitle: '${updatedUser.email} was confirmed',
+      timestamp: DateTime.now(),
+      userId: updatedUser.id,
+    );
+    _activities.add(verifyAct);
+
+    notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'isEmailVerified': true,
+        'verificationCode': FieldValue.delete(),
+      });
+      batch.set(firestore.collection('activities').doc(verifyAct.id), verifyAct.toJson());
+      await batch.commit();
+
+      await NotificationService().showNotification(
+        id: 9992,
+        title: 'Email Verified',
+        body: 'Your email (${updatedUser.email}) is successfully verified. Welcome to SplitIt!',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Error verifying email: $e');
+      return 'Failed to update verification status: $e';
+    }
   }
 
   // ==========================================
@@ -371,11 +562,35 @@ class SplitwiseProvider extends ChangeNotifier {
         notifyListeners();
       }, onError: (e) => debugPrint('Activities stream error: $e'));
 
+      bool isInitialNotifsLoad = true;
       _notificationsSub = firestore.collection('notifications').snapshots().listen((snap) {
         final newNotifs = snap.docs
             .map((d) => AppNotification.fromJson(d.data()))
             .where((n) => !_legacyMockNotifIds.contains(n.id))
             .toList();
+
+        if (!isInitialNotifsLoad) {
+          for (final change in snap.docChanges) {
+            if (change.type == DocumentChangeType.added) {
+              final data = change.doc.data();
+              if (data != null) {
+                final notif = AppNotification.fromJson(data);
+                final myId = _currentUser?.id ?? '';
+                if (myId.isNotEmpty &&
+                    notif.recipientUserId == myId &&
+                    notif.type != 'email_verification') {
+                  NotificationService().showNotification(
+                    title: notif.title,
+                    body: notif.body,
+                    payload: notif.id,
+                  );
+                }
+              }
+            }
+          }
+        }
+        isInitialNotifsLoad = false;
+
         _notifications.clear();
         _notifications.addAll(newNotifs);
         notifyListeners();
@@ -496,6 +711,8 @@ class SplitwiseProvider extends ChangeNotifier {
       subtitle: '$context • $_currency${cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
       expenseId: newExpense.id,
+      groupId: groupId,
+      userId: paidByUserId,
     );
     _activities.add(activityItem);
 
@@ -586,6 +803,8 @@ class SplitwiseProvider extends ChangeNotifier {
       subtitle: 'Payment of $_currency${amount.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
       expenseId: paymentExpense.id,
+      groupId: groupId,
+      userId: fromUserId,
     );
     _activities.add(activityItem);
 
@@ -652,6 +871,8 @@ class SplitwiseProvider extends ChangeNotifier {
       title: 'Deleted expense "${exp.description}"',
       subtitle: 'Amount: $_currency${exp.cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
+      groupId: exp.groupId,
+      userId: _currentUser?.id,
     );
     _activities.add(deleteActivity);
 
@@ -709,6 +930,8 @@ class SplitwiseProvider extends ChangeNotifier {
       title: 'Created group "${newGroup.name}"',
       subtitle: '${allMembers.length} members',
       timestamp: DateTime.now(),
+      groupId: newGroup.id,
+      userId: myId,
     );
     _activities.add(activityItem);
 
@@ -787,6 +1010,8 @@ class SplitwiseProvider extends ChangeNotifier {
         title: '$userName left group "${group.name}"',
         subtitle: '${updatedMembers.length} members remaining',
         timestamp: DateTime.now(),
+        groupId: group.id,
+        userId: userId,
       );
       batch.set(firestore.collection('activities').doc(act.id), act.toJson());
       _activities.add(act);
@@ -834,7 +1059,7 @@ class SplitwiseProvider extends ChangeNotifier {
   List<Group> searchGroups(String query) {
     if (query.trim().isEmpty) return [];
     final q = query.trim().toLowerCase();
-    return _groups.where((g) {
+    return groups.where((g) {
       return g.name.toLowerCase().contains(q) ||
           g.groupType.toLowerCase().contains(q);
     }).toList();
@@ -854,7 +1079,14 @@ class SplitwiseProvider extends ChangeNotifier {
   List<Expense> searchExpenses(String query) {
     if (query.trim().isEmpty) return [];
     final q = query.trim().toLowerCase();
+    final myId = _currentUser?.id ?? '';
+    final myGroupIds = groups.map((g) => g.id).toSet();
     return _expenses.where((e) {
+      final isRelevant = e.paidByUserId == myId ||
+          e.splitShares.containsKey(myId) ||
+          myGroupIds.contains(e.groupId);
+      if (!isRelevant) return false;
+
       final payer = getUser(e.paidByUserId)?.name ?? '';
       return e.description.toLowerCase().contains(q) ||
           e.category.toLowerCase().contains(q) ||
@@ -869,7 +1101,11 @@ class SplitwiseProvider extends ChangeNotifier {
   // ==========================================
 
   void markAllNotificationsAsRead() {
-    for (final n in _notifications) {
+    final myId = _currentUser?.id ?? '';
+    final myNotifs = _notifications
+        .where((n) => myId.isEmpty || n.recipientUserId == myId)
+        .toList();
+    for (final n in myNotifs) {
       n.isRead = true;
     }
     notifyListeners();
@@ -877,7 +1113,7 @@ class SplitwiseProvider extends ChangeNotifier {
     try {
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
-      for (final n in _notifications) {
+      for (final n in myNotifs) {
         batch.update(firestore.collection('notifications').doc(n.id), {'isRead': true});
       }
       batch.commit().catchError((e) => debugPrint('Firestore markAllNotificationsAsRead error: $e'));
@@ -887,12 +1123,11 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   void markNotificationAsRead(String notificationId) {
-    final n = _notifications.firstWhere(
-      (item) => item.id == notificationId,
-      orElse: () => _notifications.first,
-    );
-    n.isRead = true;
-    notifyListeners();
+    final n = _notifications.where((item) => item.id == notificationId).firstOrNull;
+    if (n != null) {
+      n.isRead = true;
+      notifyListeners();
+    }
 
     try {
       FirebaseFirestore.instance
@@ -906,8 +1141,12 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   void clearNotifications() {
-    final toDelete = List<AppNotification>.from(_notifications);
-    _notifications.clear();
+    final myId = _currentUser?.id ?? '';
+    final toDelete = _notifications
+        .where((n) => myId.isEmpty || n.recipientUserId == myId)
+        .toList();
+    _notifications
+        .removeWhere((n) => myId.isEmpty || n.recipientUserId == myId);
     notifyListeners();
 
     try {
@@ -936,6 +1175,7 @@ class SplitwiseProvider extends ChangeNotifier {
       title: 'Added friend "$name"',
       subtitle: email,
       timestamp: DateTime.now(),
+      userId: _currentUser?.id,
     );
     _activities.add(activityItem);
 

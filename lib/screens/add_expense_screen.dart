@@ -64,8 +64,11 @@ class _AddExpenseScreenState extends State<AddExpenseScreen> {
     if (widget.preselectedFriendId != null) {
       return [provider.currentUser.id, widget.preselectedFriendId!];
     }
-    // Default: all friends + current user
-    return provider.users.map((u) => u.id).toList();
+    final myId = provider.currentUser.id;
+    return [
+      if (myId.isNotEmpty) myId,
+      ...provider.friends.map((u) => u.id),
+    ];
   }
 
   void _syncCustomShareControllers(List<String> involvedIds, double totalCost) {

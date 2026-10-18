@@ -4,7 +4,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'providers/splitwise_provider.dart';
 import 'screens/auth_screen.dart';
+import 'screens/email_verification_screen.dart';
 import 'screens/main_screen.dart';
+import 'services/notification_service.dart';
 import 'theme/app_theme.dart';
 
 void main() async {
@@ -12,6 +14,7 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  await NotificationService().init();
   runApp(const SplitItApp());
 }
 
@@ -77,6 +80,10 @@ class SplitItRoot extends StatelessWidget {
 
     if (!provider.isAuthenticated) {
       return const AuthScreen();
+    }
+
+    if (!provider.currentUser.isEmailVerified) {
+      return const EmailVerificationScreen();
     }
 
     return const MainScreen();

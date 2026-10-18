@@ -1,0 +1,532 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import '../providers/splitwise_provider.dart';
+import '../theme/app_theme.dart';
+
+class EmailVerificationScreen extends StatefulWidget {
+  const EmailVerificationScreen({super.key});
+
+  @override
+  State<EmailVerificationScreen> createState() =>
+      _EmailVerificationScreenState();
+}
+
+class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
+  final List<TextEditingController> _digitControllers =
+      List.generate(6, (_) => TextEditingController());
+  final List<FocusNode> _focusNodes = List.generate(6, (_) => FocusNode());
+
+  bool _isLoading = false;
+  bool _isResending = false;
+  String? _errorMessage;
+  int _resendCooldown = 30;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _startCooldownTimer();
+    // Pre-fill if verification code is already assigned on user for test ease
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final user = context.read<SplitwiseProvider>().currentUser;
+      if (user.verificationCode != null && user.verificationCode!.length == 6) {
+        // We will keep digit controllers ready or let user see notification
+      }
+    });
+  }
+
+  void _startCooldownTimer() {
+    _timer?.cancel();
+    setState(() => _resendCooldown = 30);
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      if (_resendCooldown > 0) {
+        setState(() => _resendCooldown--);
+      } else {
+        t.cancel();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    for (final c in _digitControllers) {
+      c.dispose();
+    }
+    for (final f in _focusNodes) {
+      f.dispose();
+    }
+    super.dispose();
+  }
+
+  String get _enteredCode =>
+      _digitControllers.map((c) => c.text.trim()).join();
+
+  void _onDigitChanged(int index, String value) {
+    if (value.isNotEmpty) {
+      if (value.length > 1) {
+        // User pasted multiple characters (e.g. 6-digit code)
+        final clean = value.replaceAll(RegExp(r'[^0-9]'), '');
+        for (int i = 0; i < 6 && i < clean.length; i++) {
+          _digitControllers[i].text = clean[i];
+        }
+        _focusNodes.last.requestFocus();
+        setState(() {});
+        if (_enteredCode.length == 6) {
+          _submitVerification();
+        }
+        return;
+      }
+      if (index < 5) {
+        _focusNodes[index + 1].requestFocus();
+      } else {
+        _focusNodes[index].unfocus();
+        if (_enteredCode.length == 6) {
+          _submitVerification();
+        }
+      }
+    } else {
+      if (index > 0) {
+        _focusNodes[index - 1].requestFocus();
+      }
+    }
+    setState(() {});
+  }
+
+  Future<void> _submitVerification() async {
+    final code = _enteredCode;
+    if (code.length != 6) {
+      setState(() => _errorMessage = 'Please enter all 6 digits of the code.');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    final provider = context.read<SplitwiseProvider>();
+    final error = await provider.verifyEmail(code);
+
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = error;
+      });
+      if (error == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: AppTheme.tealDark,
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Text('Email verified successfully! Welcome to SplitIt.'),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _resendCode() async {
+    if (_resendCooldown > 0 || _isResending) return;
+
+    setState(() {
+      _isResending = true;
+      _errorMessage = null;
+    });
+
+    final provider = context.read<SplitwiseProvider>();
+    final error = await provider.sendEmailVerificationCode();
+
+    if (mounted) {
+      setState(() => _isResending = false);
+      if (error != null) {
+        setState(() => _errorMessage = error);
+      } else {
+        _startCooldownTimer();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: AppTheme.teal,
+            content: Text(
+              'A new verification code was sent to your email & phone notification!',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  void _quickFillFromActiveUser(String code) {
+    if (code.length != 6) return;
+    for (int i = 0; i < 6; i++) {
+      _digitControllers[i].text = code[i];
+    }
+    setState(() => _errorMessage = null);
+    _submitVerification();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = context.watch<SplitwiseProvider>();
+    final user = provider.currentUser;
+    final currentCode = user.verificationCode;
+
+    return Scaffold(
+      backgroundColor: AppTheme.background,
+      appBar: AppBar(
+        title: const Text('Verify Email'),
+        centerTitle: true,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          TextButton.icon(
+            icon: const Icon(Icons.logout, size: 18),
+            label: const Text('Log out'),
+            onPressed: () => provider.logout(),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Icon Header
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: AppTheme.tealLight,
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.mark_email_unread_outlined,
+                      size: 54,
+                      color: AppTheme.tealDark,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  const Text(
+                    'Verify your email',
+                    style: TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.charcoal,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  Text(
+                    'We sent a 6-digit confirmation code to:',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    user.email,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.charcoal,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Phone Notification Banner Card
+                  Container(
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppTheme.tealLight),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.teal.withValues(alpha: 0.06),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: AppTheme.tealLight,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Icon(
+                            Icons.phone_android,
+                            color: AppTheme.tealDark,
+                            size: 22,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Phone Notification Dispatched',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                  color: AppTheme.charcoal,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Check your phone notifications or swipe down your notification tray for the 6-digit code.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                  height: 1.3,
+                                ),
+                              ),
+                              if (currentCode != null && currentCode.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                InkWell(
+                                  onTap: () =>
+                                      _quickFillFromActiveUser(currentCode),
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 5,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: AppTheme.tealLight,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.touch_app,
+                                          size: 14,
+                                          color: AppTheme.tealDark,
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'Quick fill: $currentCode',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: AppTheme.tealDark,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // 6 Digit Input Boxes
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: List.generate(6, (index) {
+                      return SizedBox(
+                        width: 48,
+                        height: 56,
+                        child: TextField(
+                          controller: _digitControllers[index],
+                          focusNode: _focusNodes[index],
+                          keyboardType: TextInputType.number,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: AppTheme.charcoal,
+                          ),
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(1),
+                          ],
+                          decoration: InputDecoration(
+                            counterText: '',
+                            contentPadding: EdgeInsets.zero,
+                            filled: true,
+                            fillColor: Colors.white,
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide(
+                                color: _digitControllers[index].text.isNotEmpty
+                                    ? AppTheme.teal
+                                    : Colors.grey.shade300,
+                                width: _digitControllers[index].text.isNotEmpty
+                                    ? 2
+                                    : 1,
+                              ),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(
+                                color: AppTheme.teal,
+                                width: 2,
+                              ),
+                            ),
+                          ),
+                          onChanged: (val) => _onDigitChanged(index, val),
+                        ),
+                      );
+                    }),
+                  ),
+
+                  // Error Message
+                  if (_errorMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.red.shade200),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(
+                            Icons.error_outline,
+                            color: Colors.red,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _errorMessage!,
+                              style: const TextStyle(
+                                color: Colors.red,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 24),
+
+                  // Verify Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppTheme.teal,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      onPressed: _isLoading ? null : _submitVerification,
+                      child: _isLoading
+                          ? const SizedBox(
+                              height: 20,
+                              width: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              'Verify Email',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Resend Code Row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        "Didn't receive the code? ",
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: (_resendCooldown > 0 || _isResending)
+                            ? null
+                            : _resendCode,
+                        child: Text(
+                          _resendCooldown > 0
+                              ? 'Resend in ${_resendCooldown}s'
+                              : 'Resend Code',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: (_resendCooldown > 0 || _isResending)
+                                ? Colors.grey
+                                : AppTheme.teal,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  // Notification Permission Assistance
+                  TextButton.icon(
+                    icon: const Icon(Icons.notifications_active_outlined,
+                        size: 16),
+                    label: const Text(
+                      'Re-request phone notification permissions',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    onPressed: () async {
+                      final granted =
+                          await provider.requestNotificationPermission();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              granted
+                                  ? 'Phone notification permission granted!'
+                                  : 'Notification permission denied or restricted in device settings.',
+                            ),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

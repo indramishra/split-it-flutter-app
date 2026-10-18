@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
+import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/balance_banner.dart';
 import '../widgets/notification_drawer.dart';
@@ -429,10 +430,37 @@ class _MainScreenState extends State<MainScreen> {
                       user.name.isNotEmpty ? user.name : 'SplitIt Member',
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      user.email,
-                      style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                    Row(
+                      children: [
+                        Text(
+                          user.email,
+                          style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                        ),
+                        const SizedBox(width: 6),
+                        if (user.isEmailVerified) ...[
+                          const Icon(Icons.verified, size: 14, color: AppTheme.teal),
+                          const SizedBox(width: 2),
+                          const Text(
+                            'Verified',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.teal,
+                            ),
+                          ),
+                        ] else ...[
+                          const Icon(Icons.warning_amber_rounded, size: 14, color: AppTheme.negativeOrange),
+                          const SizedBox(width: 2),
+                          const Text(
+                            'Unverified',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.negativeOrange,
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -479,6 +507,41 @@ class _MainScreenState extends State<MainScreen> {
               onChanged: (val) {
                 if (val != null) provider.setCurrency(val);
               },
+            ),
+          ),
+        ),
+
+        // Device Push Notifications & Permissions
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.notifications_active_outlined, color: AppTheme.teal),
+            title: const Text('Phone Notifications'),
+            subtitle: const Text('Alerts on your phone for expenses, payments & verification'),
+            trailing: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.tealLight,
+                foregroundColor: AppTheme.tealDark,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+              onPressed: () async {
+                final granted = await provider.requestNotificationPermission();
+                await NotificationService().showNotification(
+                  id: 7777,
+                  title: 'SplitIt Phone Notification Active',
+                  body: 'Phone notifications & permissions are working on your device!',
+                );
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(granted
+                          ? 'Phone notification sent! Swipe down your notification tray.'
+                          : 'Notification sent (enable in system settings if blocked).'),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Test Alert', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
             ),
           ),
         ),
