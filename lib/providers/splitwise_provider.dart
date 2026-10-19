@@ -186,14 +186,16 @@ class SplitwiseProvider extends ChangeNotifier {
     try {
       final firestore = FirebaseFirestore.instance;
 
-      // Check email uniqueness
-      final existing = await firestore
-          .collection('users')
-          .where('email', isEqualTo: cleanEmail)
-          .limit(1)
-          .get();
-      if (existing.docs.isNotEmpty) {
-        return 'An account with this email already exists. Please log in.';
+      // Check email uniqueness in Firestore
+      if (cleanEmail.isNotEmpty) {
+        final existing = await firestore
+            .collection('users')
+            .where('email', isEqualTo: cleanEmail)
+            .limit(1)
+            .get();
+        if (existing.docs.isNotEmpty) {
+          return 'An account with this email already exists. Please log in.';
+        }
       }
 
       // Check phone uniqueness if provided
@@ -208,24 +210,35 @@ class SplitwiseProvider extends ChangeNotifier {
         }
       }
 
-      final emailCode = cleanEmail.isNotEmpty ? (100000 + Random().nextInt(900000)).toString() : null;
-      final phoneCode = cleanPhone != null && cleanPhone.isNotEmpty
-          ? (100000 + Random().nextInt(900000)).toString()
-          : null;
+      // Create user in Firebase Auth if email provided
+      UserCredential? authCredential;
+      if (cleanEmail.isNotEmpty) {
+        try {
+          authCredential = await _auth.createUserWithEmailAndPassword(
+            email: cleanEmail,
+            password: password,
+          );
+          // Send email verification link
+          await authCredential.user?.sendEmailVerification();
+        } on FirebaseAuthException catch (e) {
+          if (e.code == 'email-already-in-use') {
+            return 'An account with this email already exists. Please log in.';
+          }
+          return 'Registration failed: ${e.message}';
+        }
+      }
 
+      // Create user document in Firestore
+      final userId = authCredential?.user?.uid ?? _uuid.v4();
       final newUser = User(
-        id: _uuid.v4(),
+        id: userId,
         name: cleanName,
         email: cleanEmail,
-        password: password,
-        isEmailVerified: cleanEmail.isEmpty, // Skip email verification if no email
-        verificationCode: emailCode,
-        verificationCodeSentAt: emailCode != null ? DateTime.now() : null,
+        password: cleanEmail.isNotEmpty ? null : password, // Don't store password if using Firebase Auth
+        isEmailVerified: cleanEmail.isEmpty, // Skip if no email
         createdAt: DateTime.now(),
         phoneNumber: cleanPhone,
         isPhoneVerified: false,
-        phoneVerificationCode: phoneCode,
-        phoneVerificationCodeSentAt: phoneCode != null ? DateTime.now() : null,
       );
 
       await firestore
@@ -237,7 +250,9 @@ class SplitwiseProvider extends ChangeNotifier {
       final welcomeAct = ActivityItem(
         id: _uuid.v4(),
         title: 'Welcome to SplitIt, $cleanName!',
-        subtitle: 'Account created. Verification code sent.',
+        subtitle: cleanEmail.isNotEmpty 
+            ? 'Account created. Check your email for verification link.'
+            : 'Account created. Verify your phone number.',
         timestamp: DateTime.now(),
         userId: newUser.id,
       );
@@ -249,62 +264,20 @@ class SplitwiseProvider extends ChangeNotifier {
 
       _currentUser = newUser;
 
-      // Email verification notification (only if email provided)
-      if (emailCode != null) {
-        final verifyNotif = AppNotification(
-          id: _uuid.v4(),
-          recipientUserId: newUser.id,
-          recipientName: newUser.name,
-          recipientEmail: newUser.email,
-          title: 'SplitIt Email Verification Code: $emailCode',
-          body: 'Welcome to SplitIt! Your 6-digit email verification code is $emailCode. Enter it in the app to activate your account.',
-          timestamp: DateTime.now(),
-          type: 'email_verification',
-        );
-        firestore
-            .collection('notifications')
-            .doc(verifyNotif.id)
-            .set(verifyNotif.toJson())
-            .catchError((_) {});
-        _notifications.add(verifyNotif);
+      // Send phone verification if phone provided
+      if (cleanPhone != null && cleanPhone.isNotEmpty) {
+        await sendPhoneVerificationCode(phoneNumber: cleanPhone);
       }
 
-      // Phone verification notification if phone number provided
-      if (phoneCode != null) {
-        final phoneNotif = AppNotification(
-          id: _uuid.v4(),
-          recipientUserId: newUser.id,
-          recipientName: newUser.name,
-          recipientEmail: newUser.email,
-          title: 'SplitIt SMS Code: $phoneCode',
-          body: 'Your SplitIt phone verification code is $phoneCode. Enter it to verify your phone number.',
-          timestamp: DateTime.now(),
-          type: 'phone_verification',
-        );
-        firestore
-            .collection('notifications')
-            .doc(phoneNotif.id)
-            .set(phoneNotif.toJson())
-            .catchError((_) {});
-        _notifications.add(phoneNotif);
-      }
-
-      // Show notifications via the notification service
-      if (emailCode != null) {
-        NotificationService().showEmailVerificationNotification(
-          email: cleanEmail,
-          code: emailCode,
-        );
-      }
-      if (phoneCode != null) {
-        NotificationService().showNotification(
-          id: 9992,
-          title: 'SplitIt SMS Code: $phoneCode',
-          body: 'Your SplitIt phone verification code is $phoneCode.',
+      // If email provided, verification email was sent via Firebase Auth
+      if (cleanEmail.isNotEmpty) {
+        await NotificationService().showNotification(
+          id: 9990,
+          title: 'Verify your email',
+          body: 'We\'ve sent a verification link to $cleanEmail. Please check your inbox.',
         );
       }
 
-      _currentUser = newUser;
       if (!_users.any((u) => u.id == newUser.id)) {
         _users.add(newUser);
       }
@@ -348,23 +321,39 @@ class SplitwiseProvider extends ChangeNotifier {
     final isEmail = email != null && email.isNotEmpty;
     final cleanEmail = email?.trim().toLowerCase() ?? '';
     final cleanPhone = phoneNumber?.trim();
-    final isPhone = !isEmail && phoneNumber != null && phoneNumber.isNotEmpty; // ignore: unused_local_variable
 
     try {
       final firestore = FirebaseFirestore.instance;
       User? user;
 
       if (isEmail) {
-        final snap = await firestore
-            .collection('users')
-            .where('email', isEqualTo: cleanEmail)
-            .limit(1)
-            .get();
-        if (snap.docs.isNotEmpty) {
-          user = User.fromJson(snap.docs.first.data());
+        // Sign in with Firebase Auth
+        try {
+          final authCredential = await _auth.signInWithEmailAndPassword(
+            email: cleanEmail,
+            password: password,
+          );
+          
+          // Get user data from Firestore
+          final snap = await firestore
+              .collection('users')
+              .doc(authCredential.user!.uid)
+              .get();
+          
+          if (snap.exists) {
+            user = User.fromJson(snap.data()!);
+          }
+        } on FirebaseAuthException catch (e) {
+          if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
+            return 'Incorrect email or password.';
+          }
+          if (e.code == 'user-disabled') {
+            return 'This account has been disabled.';
+          }
+          return 'Login failed: ${e.message}';
         }
       } else {
-        // Query phone number
+        // Phone + password login (find user by phone, then verify password)
         final snap = await firestore
             .collection('users')
             .where('phoneNumber', isEqualTo: cleanPhone)
@@ -374,9 +363,10 @@ class SplitwiseProvider extends ChangeNotifier {
           user = User.fromJson(snap.docs.first.data());
         } else {
           // Try with stripped phone digits
+          final stripped = cleanPhone?.replaceAll(RegExp(r'[\s\-().]'), '') ?? '';
           final snapDigits = await firestore
               .collection('users')
-              .where('phoneNumber', isEqualTo: cleanPhone?.replaceAll(RegExp(r'[\s\-().]'), ''))
+              .where('phoneNumber', isEqualTo: stripped)
               .limit(1)
               .get();
           if (snapDigits.docs.isNotEmpty) {
@@ -401,7 +391,8 @@ class SplitwiseProvider extends ChangeNotifier {
             : 'No account found with this phone number. Please register.';
       }
 
-      if (user.password != null && user.password != password) {
+      // Verify password for phone+password login (if not using Firebase Auth)
+      if (!isEmail && user.password != null && user.password != password) {
         return 'Incorrect password. Please try again.';
       }
 
@@ -414,15 +405,11 @@ class SplitwiseProvider extends ChangeNotifier {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
       }
 
-      // Check if email verification is needed
-      if (!_currentUser!.isEmailVerified && _currentUser!.email.isNotEmpty) {
-        if (_currentUser!.verificationCode == null) {
-          sendEmailVerificationCode();
-        } else {
-          NotificationService().showEmailVerificationNotification(
-            email: _currentUser!.email,
-            code: _currentUser!.verificationCode!,
-          );
+      // Check if email verification is needed (use Firebase Auth status)
+      if (isEmail && _auth.currentUser != null) {
+        await _auth.currentUser!.reload();
+        if (!_auth.currentUser!.emailVerified) {
+          await sendEmailVerificationCode(); // Resend verification link
         }
       }
 
@@ -522,94 +509,77 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   Future<String?> sendEmailVerificationCode() async {
-    if (_currentUser == null) return 'No user is currently signed in.';
-    final code = (100000 + Random().nextInt(900000)).toString();
-    final updatedUser = _currentUser!.copyWith(
-      verificationCode: code,
-      verificationCodeSentAt: DateTime.now(),
-    );
-    _currentUser = updatedUser;
-
-    final notif = AppNotification(
-      id: _uuid.v4(),
-      recipientUserId: updatedUser.id,
-      recipientName: updatedUser.name,
-      recipientEmail: updatedUser.email,
-      title: 'SplitIt Verification Code: $code',
-      body: 'Your 6-digit verification code is $code. Enter it in the app to activate your account.',
-      timestamp: DateTime.now(),
-      type: 'email_verification',
-    );
-    _notifications.add(notif);
-
-    notifyListeners();
-
+    if (_auth.currentUser == null) return 'No user is currently signed in.';
+    
     try {
-      final firestore = FirebaseFirestore.instance;
-      final batch = firestore.batch();
-      batch.update(firestore.collection('users').doc(updatedUser.id), {
-        'verificationCode': code,
-        'verificationCodeSentAt': DateTime.now().toIso8601String(),
-      });
-      batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
-      await batch.commit();
-
-      await NotificationService().showEmailVerificationNotification(
-        email: updatedUser.email,
-        code: code,
+      await _auth.currentUser!.sendEmailVerification();
+      
+      await NotificationService().showNotification(
+        id: 9990,
+        title: 'Verification email sent',
+        body: 'We\'ve sent a verification link to ${_auth.currentUser!.email}. Please check your inbox.',
       );
       return null;
     } catch (e) {
-      debugPrint('Error sending verification code: $e');
-      return 'Failed to send verification code: $e';
+      debugPrint('Error sending email verification: $e');
+      return 'Failed to send verification email: $e';
     }
   }
 
+  /// Checks if email is verified via Firebase Auth
+  Future<bool> checkEmailVerified() async {
+    if (_auth.currentUser == null) return false;
+    await _auth.currentUser!.reload();
+    return _auth.currentUser!.emailVerified;
+  }
+
+  /// Verifies email by checking Firebase Auth status
   Future<String?> verifyEmail(String code) async {
+    // Firebase uses link-based verification, not code-based
+    // This method checks if email is now verified
     if (_currentUser == null) return 'No user is currently signed in.';
-    final cleanCode = code.trim();
-    final userCode = _currentUser!.verificationCode?.trim();
-
-    if (userCode != null && userCode.isNotEmpty && userCode != cleanCode) {
-      return 'Invalid verification code. Please check your notification or enter the 6 digits sent to you.';
-    }
-
-    final updatedUser = _currentUser!.copyWith(
-      isEmailVerified: true,
-      clearVerificationCode: true,
-    );
-    _currentUser = updatedUser;
-
-    final verifyAct = ActivityItem(
-      id: _uuid.v4(),
-      title: 'Email verified',
-      subtitle: '${updatedUser.email} was confirmed',
-      timestamp: DateTime.now(),
-      userId: updatedUser.id,
-    );
-    _activities.add(verifyAct);
-
-    notifyListeners();
-
+    
     try {
-      final firestore = FirebaseFirestore.instance;
-      final batch = firestore.batch();
-      batch.update(firestore.collection('users').doc(updatedUser.id), {
-        'isEmailVerified': true,
-        'verificationCode': FieldValue.delete(),
-      });
-      batch.set(firestore.collection('activities').doc(verifyAct.id), verifyAct.toJson());
-      await batch.commit();
+      await _auth.currentUser?.reload();
+      final isVerified = _auth.currentUser?.emailVerified ?? false;
+      
+      if (isVerified) {
+        final updatedUser = _currentUser!.copyWith(
+          isEmailVerified: true,
+          clearVerificationCode: true,
+        );
+        _currentUser = updatedUser;
 
-      await NotificationService().showNotification(
-        id: 9992,
-        title: 'Email Verified',
-        body: 'Your email (${updatedUser.email}) is successfully verified. Welcome to SplitIt!',
-      );
-      return null;
+        final verifyAct = ActivityItem(
+          id: _uuid.v4(),
+          title: 'Email verified',
+          subtitle: '${updatedUser.email} was confirmed',
+          timestamp: DateTime.now(),
+          userId: updatedUser.id,
+        );
+        _activities.add(verifyAct);
+        notifyListeners();
+
+        final firestore = FirebaseFirestore.instance;
+        final batch = firestore.batch();
+        batch.update(firestore.collection('users').doc(updatedUser.id), {
+          'isEmailVerified': true,
+        });
+        batch.set(firestore.collection('activities').doc(verifyAct.id), verifyAct.toJson());
+        await batch.commit();
+
+        await NotificationService().showNotification(
+          id: 9992,
+          title: 'Email Verified',
+          body: 'Your email is now verified on SplitIt!',
+        );
+        return null;
+      } else {
+        return 'Email not verified yet. Please check your inbox and click the verification link.';
+      }
     } catch (e) {
-      debugPrint('Error verifying email: $e');
-      return 'Failed to update verification status: $e';
+      debugPrint('Error checking email verification: $e');
+      return 'Failed to verify email: $e';
     }
   }
 
