@@ -45,6 +45,7 @@ dependencies:
   # Contact list access to find friends who have the app
   flutter_contacts: ^1.1.9+2
   permission_handler: ^11.3.1
+  google_sign_in: ^7.2.0
 
 dev_dependencies:
   flutter_test:

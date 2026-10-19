@@ -253,6 +253,24 @@ class _AuthScreenState extends State<AuthScreen> {
     });
   }
 
+  Future<void> _signInWithGoogle() async {
+    setState(() {
+      _errorMessage = null;
+      _successMessage = null;
+      _isLoading = true;
+    });
+
+    final provider = context.read<SplitwiseProvider>();
+    final error = await provider.signInWithGoogle();
+
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = error;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final inputText = _emailOrPhoneController.text.trim();
@@ -787,6 +805,55 @@ class _AuthScreenState extends State<AuthScreen> {
                           ),
                         ],
                       ],
+                    ),
+                  ),
+
+                  // Divider with "Or continue with"
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      const Expanded(child: Divider(thickness: 1, color: Colors.grey)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'Or continue with',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      const Expanded(child: Divider(thickness: 1, color: Colors.grey)),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Google Sign-In Button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.charcoal,
+                        side: BorderSide(color: Colors.grey.shade300, width: 1.5),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 0,
+                        backgroundColor: Colors.white,
+                      ),
+                      onPressed: _isLoading ? null : _signInWithGoogle,
+                      icon: const Icon(
+                        Icons.g_mobiledata,
+                        size: 22,
+                        color: Colors.red,
+                      ),
+                      label: const Text(
+                        'Continue with Google',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ),
 

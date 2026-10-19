@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide User;
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' hide Group;
 import 'package:permission_handler/permission_handler.dart';
@@ -491,6 +492,7 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<void> logout() async {
     _currentUser = null;
+    await GoogleSignIn.instance.signOut();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('active_user_id');
@@ -498,6 +500,109 @@ class SplitwiseProvider extends ChangeNotifier {
       debugPrint('Failed to clear session in SharedPreferences: $prefErr');
     }
     notifyListeners();
+  }
+
+  // ==========================================
+  // GOOGLE SIGN-IN
+  // ==========================================
+
+  Future<String?> signInWithGoogle() async {
+    try {
+      // Initialize Google Sign-In
+      await GoogleSignIn.instance.initialize(
+        // clientId and serverClientId will be read from platform config files
+      );
+
+      final GoogleSignInAccount account = await GoogleSignIn.instance.authenticate(
+        scopeHint: ['email', 'profile'],
+      );
+      
+      final idToken = account.authentication.idToken;
+      if (idToken == null) {
+        return 'Failed to get ID token from Google.';
+      }
+
+      final AuthCredential credential = GoogleAuthProvider.credential(idToken: idToken);
+
+      final UserCredential userCredential = await _auth.signInWithCredential(credential);
+      
+      if (userCredential.user == null) {
+        return 'Failed to sign in with Google.';
+      }
+
+      final firestore = FirebaseFirestore.instance;
+      final uid = userCredential.user!.uid;
+      
+      // Check if user document exists
+      final userDoc = await firestore.collection('users').doc(uid).get();
+      User appUser;
+
+      if (userDoc.exists) {
+        // Existing user - update if needed
+        appUser = User.fromJson(userDoc.data()!);
+        
+        // Update profile info from Google if changed
+        if (appUser.name != account.displayName || 
+            appUser.email != account.email ||
+            (appUser.avatarUrl != account.photoUrl)) {
+          final updatedUser = appUser.copyWith(
+            name: account.displayName ?? appUser.name,
+            email: account.email,
+            avatarUrl: account.photoUrl,
+            isEmailVerified: true, // Google emails are pre-verified
+          );
+          await firestore.collection('users').doc(uid).update(updatedUser.toJson());
+          appUser = updatedUser;
+        }
+      } else {
+        // New user - create document
+        appUser = User(
+          id: uid,
+          name: account.displayName ?? 'Google User',
+          email: account.email,
+          isEmailVerified: true, // Google emails are pre-verified
+          createdAt: DateTime.now(),
+          avatarUrl: account.photoUrl,
+        );
+        await firestore.collection('users').doc(uid).set(appUser.toJson());
+
+        // Welcome activity
+        final welcomeAct = ActivityItem(
+          id: _uuid.v4(),
+          title: 'Welcome to SplitIt, ${appUser.name}!',
+          subtitle: 'Account created with Google.',
+          timestamp: DateTime.now(),
+          userId: appUser.id,
+        );
+        firestore.collection('activities').doc(welcomeAct.id).set(welcomeAct.toJson()).catchError((_) {});
+      }
+
+      _currentUser = appUser;
+
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('active_user_id', appUser.id);
+      } catch (prefErr) {
+        debugPrint('Failed to save session to SharedPreferences: $prefErr');
+      }
+
+      // No phone verification needed for Google sign-in unless user adds phone later
+      if (appUser.phoneNumber != null && appUser.phoneNumber!.isNotEmpty && !appUser.isPhoneVerified) {
+        sendPhoneVerificationCode();
+      }
+
+      notifyListeners();
+      return null;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('Google sign-in Firebase error: ${e.code} - ${e.message}');
+      if (e.code == 'account-exists-with-different-credential') {
+        return 'An account already exists with this email. Please sign in with your password or link the accounts.';
+      }
+      return 'Google sign-in failed: ${e.message}';
+    } catch (e) {
+      debugPrint('Google sign-in error: $e');
+      return 'Google sign-in failed: $e';
+    }
   }
 
   // ==========================================
