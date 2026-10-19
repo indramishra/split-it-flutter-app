@@ -310,20 +310,23 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   Future<String?> login({
-    required String email,
+    String? email,
+    String? phoneNumber,
     required String password,
   }) async {
-    final cleanInput = email.trim();
-    if (cleanInput.isEmpty) {
-      return 'Please enter your email or phone number.';
+    if (email == null || email.isEmpty) {
+      if (phoneNumber == null || phoneNumber.isEmpty) {
+        return 'Please enter your email or phone number.';
+      }
     }
     if (password.isEmpty) {
       return 'Please enter your password.';
     }
 
-    final isEmail = cleanInput.contains('@');
-    final cleanEmail = cleanInput.toLowerCase();
-    final cleanPhone = cleanInput.replaceAll(RegExp(r'[\s\-().]'), '');
+    final isEmail = email != null && email.isNotEmpty;
+    final cleanEmail = email?.trim().toLowerCase() ?? '';
+    final cleanPhone = phoneNumber?.trim();
+    final isPhone = !isEmail && phoneNumber != null && phoneNumber.isNotEmpty; // ignore: unused_local_variable
 
     try {
       final firestore = FirebaseFirestore.instance;
@@ -342,7 +345,7 @@ class SplitwiseProvider extends ChangeNotifier {
         // Query phone number
         final snap = await firestore
             .collection('users')
-            .where('phoneNumber', isEqualTo: cleanInput)
+            .where('phoneNumber', isEqualTo: cleanPhone)
             .limit(1)
             .get();
         if (snap.docs.isNotEmpty) {
@@ -351,7 +354,7 @@ class SplitwiseProvider extends ChangeNotifier {
           // Try with stripped phone digits
           final snapDigits = await firestore
               .collection('users')
-              .where('phoneNumber', isEqualTo: cleanPhone)
+              .where('phoneNumber', isEqualTo: cleanPhone?.replaceAll(RegExp(r'[\s\-().]'), ''))
               .limit(1)
               .get();
           if (snapDigits.docs.isNotEmpty) {
@@ -366,7 +369,7 @@ class SplitwiseProvider extends ChangeNotifier {
           return u.email.toLowerCase() == cleanEmail;
         } else {
           final uPhone = u.phoneNumber?.replaceAll(RegExp(r'[\s\-().]'), '') ?? '';
-          return u.phoneNumber == cleanInput || (uPhone.isNotEmpty && uPhone == cleanPhone);
+          return u.phoneNumber == cleanPhone || (uPhone.isNotEmpty && uPhone == cleanPhone?.replaceAll(RegExp(r'[\s\-().]'), ''));
         }
       }).firstOrNull;
 

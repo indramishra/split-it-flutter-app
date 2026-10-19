@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/country_code_picker.dart';
 import 'forgot_password_screen.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -15,8 +16,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isSignUp = false;
 
   final _nameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _phoneController = TextEditingController();
+  final _emailOrPhoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
@@ -25,14 +25,41 @@ class _AuthScreenState extends State<AuthScreen> {
   String? _errorMessage;
   String? _successMessage;
 
+  // Country code state - defaults to India (+91)
+  String _selectedCountryDialCode = '+91';
+  String _selectedCountryFlag = '🇮🇳';
+
   @override
   void dispose() {
     _nameController.dispose();
-    _emailController.dispose();
-    _phoneController.dispose();
+    _emailOrPhoneController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
+  }
+
+  // Detects if input is email or phone
+  bool _isEmailInput(String input) {
+    return input.contains('@');
+  }
+
+  // Format phone number with country code
+  String _formatPhoneNumber(String phone, String countryCode) {
+    final digitsOnly = phone.replaceAll(RegExp(r'[\s\-().]'), '');
+    if (digitsOnly.startsWith('+')) {
+      return digitsOnly;
+    }
+    return '$countryCode$digitsOnly';
+  }
+
+  // Check if the input looks like a phone number (digits or starts with +)
+  bool _isPhoneInput(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return false;
+    if (trimmed.contains('@')) return false;
+    // If it contains mostly digits or starts with +, treat as phone
+    final digitCount = RegExp(r'[0-9]').allMatches(trimmed).length;
+    return digitCount >= 4; // At least 4 digits suggests phone number
   }
 
   Future<void> _submit() async {
@@ -43,7 +70,7 @@ class _AuthScreenState extends State<AuthScreen> {
     });
 
     final provider = context.read<SplitwiseProvider>();
-    final email = _emailController.text.trim();
+    final emailOrPhone = _emailOrPhoneController.text.trim();
     final password = _passwordController.text;
 
     if (_isSignUp) {
@@ -65,12 +92,16 @@ class _AuthScreenState extends State<AuthScreen> {
         return;
       }
 
-      final phone = _phoneController.text.trim();
+      // Determine if user is signing up with email or phone
+      final isEmail = _isEmailInput(emailOrPhone);
+      final email = isEmail ? emailOrPhone.toLowerCase() : '';
+      final phoneNumber = isEmail ? null : _formatPhoneNumber(emailOrPhone, _selectedCountryDialCode);
+
       final error = await provider.register(
         name: name,
         email: email,
         password: password,
-        phoneNumber: phone.isNotEmpty ? phone : null,
+        phoneNumber: phoneNumber,
       );
 
       if (mounted) {
@@ -80,9 +111,15 @@ class _AuthScreenState extends State<AuthScreen> {
         });
       }
     } else {
+      // Login - detect if email or phone
+      final isEmail = _isEmailInput(emailOrPhone);
+      final loginEmail = isEmail ? emailOrPhone.toLowerCase() : '';
+      final loginPhone = isEmail ? null : _formatPhoneNumber(emailOrPhone, _selectedCountryDialCode);
+
       final error = await provider.login(
-        email: email,
+        email: loginEmail,
         password: password,
+        phoneNumber: loginPhone,
       );
 
       if (mounted) {
@@ -96,6 +133,10 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final inputText = _emailOrPhoneController.text.trim();
+    final isPhone = _isPhoneInput(inputText);
+    final isEmailMode = inputText.contains('@');
+
     return Scaffold(
       backgroundColor: AppTheme.background,
       body: SafeArea(
@@ -318,35 +359,95 @@ class _AuthScreenState extends State<AuthScreen> {
                           const SizedBox(height: 14),
                         ],
 
-                        // Email
-                        TextField(
-                          controller: _emailController,
-                          keyboardType: _isSignUp ? TextInputType.emailAddress : TextInputType.text,
-                          autocorrect: false,
-                          decoration: InputDecoration(
-                            labelText: _isSignUp ? 'Email Address *' : 'Email or Phone Number',
-                            prefixIcon: Icon(_isSignUp ? Icons.email_outlined : Icons.account_circle_outlined, size: 20),
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                          ),
+                        // Email or Phone Number (single field with country code for phone)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Country Code Dropdown (shown when phone input is detected)
+                                if (isPhone && !isEmailMode) ...[
+                                  SizedBox(
+                                    width: 110,
+                                    child: DropdownButtonFormField<String>(
+                                      initialValue: _selectedCountryDialCode,
+                                      decoration: InputDecoration(
+                                        hintText: 'Code',
+                                        hintStyle: TextStyle(color: Colors.grey.shade500, fontSize: 13),
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                        constraints: const BoxConstraints(minWidth: 0),
+                                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                      ),
+                                      style: const TextStyle(fontSize: 13, color: AppTheme.charcoal),
+                                      icon: const Icon(Icons.arrow_drop_down, size: 18),
+                                      items: countries.map((c) {
+                                        return DropdownMenuItem<String>(
+                                          value: c.dialCode,
+                                          child: Row(
+                                            children: [
+                                              Text(
+                                                getFlagFromDialCode(c.dialCode),
+                                                style: const TextStyle(fontSize: 16),
+                                              ),
+                                              const SizedBox(width: 4),
+                                              Text(
+                                                c.dialCode,
+                                                style: const TextStyle(fontSize: 13),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      }).toList(),
+                                      onChanged: (value) {
+                                        if (value != null) {
+                                          setState(() {
+                                            _selectedCountryDialCode = value;
+                                            _selectedCountryFlag = getFlagFromDialCode(value);
+                                          });
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                ],
+                                
+                                // Main input field
+                                Expanded(
+                                  child: TextField(
+                                    controller: _emailOrPhoneController,
+                                    keyboardType: isPhone && !isEmailMode
+                                        ? TextInputType.phone
+                                        : (inputText.contains('@') ? TextInputType.emailAddress : TextInputType.emailAddress),
+                                    autocorrect: false,
+                                    onChanged: (value) => setState(() {}),
+                                    decoration: InputDecoration(
+                                      labelText: _isSignUp
+                                          ? 'Email or Phone Number *'
+                                          : 'Email or Phone Number',
+                                      hintText: inputText.contains('@') ? 'you@example.com' : 'Enter email or phone',
+                                      prefixIcon: isPhone && !isEmailMode
+                                          ? const Icon(Icons.phone_outlined, size: 20)
+                                          : const Icon(Icons.email_outlined, size: 20),
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            
+                            // Helper text for phone input
+                            if (isPhone && !isEmailMode && inputText.trim().isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                'SMS verification code will be sent to $_selectedCountryFlag $_selectedCountryDialCode',
+                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                              ),
+                            ],
+                          ],
                         ),
                         const SizedBox(height: 14),
-
-                        // Phone Number (if sign up)
-                        if (_isSignUp) ...[
-                          TextField(
-                            controller: _phoneController,
-                            keyboardType: TextInputType.phone,
-                            decoration: InputDecoration(
-                              labelText: 'Phone Number (for SMS OTP)',
-                              prefixIcon: const Icon(Icons.phone_outlined, size: 20),
-                              hintText: 'e.g. +1 555-123-4567',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                            ),
-                          ),
-                          const SizedBox(height: 14),
-                        ],
 
                         // Password
                         TextField(
@@ -394,13 +495,13 @@ class _AuthScreenState extends State<AuthScreen> {
                                 final updatedEmail = await Navigator.of(context).push<String>(
                                   MaterialPageRoute(
                                     builder: (_) => ForgotPasswordScreen(
-                                      initialEmail: _emailController.text.trim(),
+                                      initialEmail: _emailOrPhoneController.text.trim(),
                                     ),
                                   ),
                                 );
                                 if (updatedEmail != null && mounted) {
                                   setState(() {
-                                    _emailController.text = updatedEmail;
+                                    _emailOrPhoneController.text = updatedEmail;
                                     _passwordController.clear();
                                     _isSignUp = false;
                                     _errorMessage = null;
