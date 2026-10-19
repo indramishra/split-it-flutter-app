@@ -3,6 +3,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide User;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_contacts/flutter_contacts.dart' hide Group;
 import 'package:permission_handler/permission_handler.dart';
@@ -15,10 +16,15 @@ import '../services/notification_service.dart';
 
 class SplitwiseProvider extends ChangeNotifier {
   final _uuid = const Uuid();
+  final _auth = FirebaseAuth.instance;
 
   // Current Logged In User
   User? _currentUser;
   bool _isAuthLoading = true;
+
+  // Phone auth state
+  String? _verificationId;
+  int? _resendToken;
 
   // Master Lists
   final List<User> _users = [];
@@ -321,14 +327,21 @@ class SplitwiseProvider extends ChangeNotifier {
   Future<String?> login({
     String? email,
     String? phoneNumber,
-    required String password,
+    String? password,
+    String? smsCode,
   }) async {
+    // Phone + SMS code login (passwordless)
+    if (phoneNumber != null && phoneNumber.isNotEmpty && smsCode != null && smsCode.isNotEmpty) {
+      return await _loginWithPhone(phoneNumber, smsCode);
+    }
+
+    // Email + password login
     if (email == null || email.isEmpty) {
       if (phoneNumber == null || phoneNumber.isEmpty) {
         return 'Please enter your email or phone number.';
       }
     }
-    if (password.isEmpty) {
+    if (password == null || password.isEmpty) {
       return 'Please enter your password.';
     }
 
@@ -401,8 +414,8 @@ class SplitwiseProvider extends ChangeNotifier {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
       }
 
-      // Check if email or phone verification is needed
-      if (!_currentUser!.isEmailVerified) {
+      // Check if email verification is needed
+      if (!_currentUser!.isEmailVerified && _currentUser!.email.isNotEmpty) {
         if (_currentUser!.verificationCode == null) {
           sendEmailVerificationCode();
         } else {
@@ -413,18 +426,11 @@ class SplitwiseProvider extends ChangeNotifier {
         }
       }
 
+      // Check if phone verification is needed
       if (_currentUser!.phoneNumber != null &&
           _currentUser!.phoneNumber!.isNotEmpty &&
           !_currentUser!.isPhoneVerified) {
-        if (_currentUser!.phoneVerificationCode == null) {
-          sendPhoneVerificationCode();
-        } else {
-          NotificationService().showNotification(
-            id: 9991,
-            title: 'SplitIt SMS Code: ${_currentUser!.phoneVerificationCode}',
-            body: 'Your SplitIt phone verification code is ${_currentUser!.phoneVerificationCode}.',
-          );
-        }
+        sendPhoneVerificationCode();
       }
 
       notifyListeners();
@@ -432,6 +438,67 @@ class SplitwiseProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('Login exception: $e');
       return 'Login failed: $e';
+    }
+  }
+
+  /// Passwordless login with phone + SMS code
+  Future<String?> _loginWithPhone(String phoneNumber, String smsCode) async {
+    final cleanPhone = phoneNumber.trim();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      User? user;
+
+      // Find user by phone number
+      final snap = await firestore
+          .collection('users')
+          .where('phoneNumber', isEqualTo: cleanPhone)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        user = User.fromJson(snap.docs.first.data());
+      } else {
+        // Try with stripped phone digits
+        final stripped = cleanPhone.replaceAll(RegExp(r'[\s\-().]'), '');
+        final snapDigits = await firestore
+            .collection('users')
+            .where('phoneNumber', isEqualTo: stripped)
+            .limit(1)
+            .get();
+        if (snapDigits.docs.isNotEmpty) {
+          user = User.fromJson(snapDigits.docs.first.data());
+        }
+      }
+
+      if (user == null) {
+        return 'No account found with this phone number. Please register.';
+      }
+
+      _currentUser = user;
+
+      // Send SMS code if not already sent
+      if (_verificationId == null) {
+        final sendError = await sendPhoneVerificationCode(phoneNumber: cleanPhone);
+        if (sendError != null) return sendError;
+      }
+
+      // Verify the SMS code
+      final verifyError = await verifyPhone(smsCode);
+      if (verifyError != null) return verifyError;
+
+      // Save session
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('active_user_id', _currentUser!.id);
+      } catch (prefErr) {
+        debugPrint('Failed to save session to SharedPreferences: $prefErr');
+      }
+
+      notifyListeners();
+      return null;
+    } catch (e) {
+      debugPrint('Phone login exception: $e');
+      return 'Phone login failed: $e';
     }
   }
 
@@ -547,115 +614,138 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   // ==========================================
-  // PHONE VERIFICATION
+  // PHONE VERIFICATION (Firebase Phone Auth)
   // ==========================================
 
-  Future<String?> sendPhoneVerificationCode() async {
-    if (_currentUser == null) return 'No user is currently signed in.';
-    if (_currentUser!.phoneNumber == null || _currentUser!.phoneNumber!.isEmpty) {
-      return 'No phone number linked to this account.';
+  /// Sends a real SMS verification code using Firebase Phone Auth
+  Future<String?> sendPhoneVerificationCode({String? phoneNumber}) async {
+    final targetPhone = phoneNumber ?? _currentUser?.phoneNumber;
+    if (targetPhone == null || targetPhone.isEmpty) {
+      return 'No phone number provided.';
     }
-    final code = (100000 + Random().nextInt(900000)).toString();
-    final updatedUser = _currentUser!.copyWith(
-      phoneVerificationCode: code,
-      phoneVerificationCodeSentAt: DateTime.now(),
-    );
-    _currentUser = updatedUser;
-
-    final notif = AppNotification(
-      id: _uuid.v4(),
-      recipientUserId: updatedUser.id,
-      recipientName: updatedUser.name,
-      recipientEmail: updatedUser.email,
-      title: 'SplitIt SMS Code: $code',
-      body: 'Your SplitIt phone verification code is $code.',
-      timestamp: DateTime.now(),
-      type: 'phone_verification',
-    );
-    _notifications.add(notif);
-    notifyListeners();
 
     try {
-      final firestore = FirebaseFirestore.instance;
-      final batch = firestore.batch();
-      batch.update(firestore.collection('users').doc(updatedUser.id), {
-        'phoneVerificationCode': code,
-        'phoneVerificationCodeSentAt': DateTime.now().toIso8601String(),
-      });
-      batch.set(
-          firestore.collection('notifications').doc(notif.id), notif.toJson());
-      await batch.commit();
-      await NotificationService().showNotification(
-        id: 9994,
-        title: 'SplitIt SMS: $code',
-        body:
-            'Your phone verification code is $code. Enter it in the app.',
+      await _auth.verifyPhoneNumber(
+        phoneNumber: targetPhone,
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          // Auto-verification on Android (SMS retrieval API)
+          await _linkPhoneCredential(credential);
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          debugPrint('Phone verification failed: ${e.message}');
+        },
+        codeSent: (String verificationId, int? resendToken) {
+          _verificationId = verificationId;
+          _resendToken = resendToken;
+          debugPrint('SMS code sent to $targetPhone');
+        },
+        codeAutoRetrievalTimeout: (String verificationId) {
+          _verificationId = verificationId;
+        },
+        forceResendingToken: _resendToken,
+        timeout: const Duration(minutes: 2),
       );
       return null;
     } catch (e) {
-      debugPrint('Error sending phone verification code: $e');
-      return 'Failed to send phone verification code: $e';
+      debugPrint('Error sending SMS: $e');
+      return 'Failed to send SMS: $e';
     }
   }
 
+  /// Verifies the SMS code and links phone to user account
   Future<String?> verifyPhone(String code) async {
+    if (_verificationId == null) {
+      return 'No pending verification. Please request a new code.';
+    }
     if (_currentUser == null) return 'No user is currently signed in.';
-    final cleanCode = code.trim();
-    final userCode = _currentUser!.phoneVerificationCode?.trim();
-
-    if (userCode == null || userCode.isEmpty) {
-      return 'No pending phone verification code. Please request a new one.';
-    }
-    if (userCode != cleanCode) {
-      return 'Invalid phone verification code. Please check your notifications.';
-    }
-
-    // Check expiry (15 minutes)
-    if (_currentUser!.phoneVerificationCodeSentAt != null) {
-      final age = DateTime.now()
-          .difference(_currentUser!.phoneVerificationCodeSentAt!);
-      if (age.inMinutes > 15) {
-        return 'Phone verification code has expired. Please request a new one.';
-      }
-    }
-
-    final updatedUser = _currentUser!.copyWith(
-      isPhoneVerified: true,
-      clearPhoneVerificationCode: true,
-    );
-    _currentUser = updatedUser;
-
-    final verifyAct = ActivityItem(
-      id: _uuid.v4(),
-      title: 'Phone verified',
-      subtitle: '${updatedUser.phoneNumber} was confirmed',
-      timestamp: DateTime.now(),
-      userId: updatedUser.id,
-    );
-    _activities.add(verifyAct);
-    notifyListeners();
 
     try {
+      final credential = PhoneAuthProvider.credential(
+        verificationId: _verificationId!,
+        smsCode: code.trim(),
+      );
+
+      // Link phone to current user
+      await _linkPhoneCredential(credential);
+      return null;
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'invalid-verification-code') {
+        return 'Invalid verification code. Please try again.';
+      }
+      if (e.code == 'session-expired') {
+        return 'Verification code expired. Please request a new one.';
+      }
+      return 'Verification failed: ${e.message}';
+    } catch (e) {
+      debugPrint('Error verifying phone: $e');
+      return 'Verification failed: $e';
+    }
+  }
+
+  Future<void> _linkPhoneCredential(PhoneAuthCredential credential) async {
+    if (_currentUser == null) return;
+
+    try {
+      // Link the phone credential to the current user
+      await _auth.currentUser?.linkWithCredential(credential);
+
+      // Update local user model
+      final updatedUser = _currentUser!.copyWith(
+        isPhoneVerified: true,
+        clearPhoneVerificationCode: true,
+      );
+      _currentUser = updatedUser;
+
+      // Clear verification state
+      _verificationId = null;
+      _resendToken = null;
+
+      // Update Firestore
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
+
+      final verifyAct = ActivityItem(
+        id: _uuid.v4(),
+        title: 'Phone verified',
+        subtitle: '${updatedUser.phoneNumber} was confirmed',
+        timestamp: DateTime.now(),
+        userId: updatedUser.id,
+      );
+
       batch.update(firestore.collection('users').doc(updatedUser.id), {
         'isPhoneVerified': true,
         'phoneVerificationCode': FieldValue.delete(),
       });
-      batch.set(
-          firestore.collection('activities').doc(verifyAct.id),
-          verifyAct.toJson());
+      batch.set(firestore.collection('activities').doc(verifyAct.id), verifyAct.toJson());
       await batch.commit();
+
+      _activities.add(verifyAct);
+      notifyListeners();
+
       await NotificationService().showNotification(
         id: 9995,
         title: 'Phone Verified',
         body: 'Your phone number is now verified on SplitIt!',
       );
-      return null;
-    } catch (e) {
-      debugPrint('Error verifying phone: $e');
-      return 'Failed to update phone verification status: $e';
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'provider-already-linked') {
+        // Phone already linked, just mark as verified
+        final updatedUser = _currentUser!.copyWith(
+          isPhoneVerified: true,
+          clearPhoneVerificationCode: true,
+        );
+        _currentUser = updatedUser;
+        notifyListeners();
+      } else {
+        debugPrint('Error linking phone: $e');
+        rethrow;
+      }
     }
+  }
+
+  /// Resend SMS code
+  Future<String?> resendPhoneVerificationCode() async {
+    return sendPhoneVerificationCode(phoneNumber: _currentUser?.phoneNumber);
   }
 
   // ==========================================
