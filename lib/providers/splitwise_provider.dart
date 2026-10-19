@@ -165,8 +165,13 @@ class SplitwiseProvider extends ChangeNotifier {
     final cleanEmail = email.trim().toLowerCase();
     final cleanPhone = phoneNumber?.trim();
     if (cleanName.isEmpty) return 'Please enter your full name.';
-    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
+    
+    // Email is optional, but phone must be provided if no email
+    if (cleanEmail.isNotEmpty && !cleanEmail.contains('@')) {
       return 'Please enter a valid email address.';
+    }
+    if (cleanEmail.isEmpty && (cleanPhone == null || cleanPhone.isEmpty)) {
+      return 'Please enter either an email address or phone number.';
     }
     if (password.length < 6) {
       return 'Password must be at least 6 characters.';
@@ -197,7 +202,7 @@ class SplitwiseProvider extends ChangeNotifier {
         }
       }
 
-      final emailCode = (100000 + Random().nextInt(900000)).toString();
+      final emailCode = cleanEmail.isNotEmpty ? (100000 + Random().nextInt(900000)).toString() : null;
       final phoneCode = cleanPhone != null && cleanPhone.isNotEmpty
           ? (100000 + Random().nextInt(900000)).toString()
           : null;
@@ -207,9 +212,9 @@ class SplitwiseProvider extends ChangeNotifier {
         name: cleanName,
         email: cleanEmail,
         password: password,
-        isEmailVerified: false,
+        isEmailVerified: cleanEmail.isEmpty, // Skip email verification if no email
         verificationCode: emailCode,
-        verificationCodeSentAt: DateTime.now(),
+        verificationCodeSentAt: emailCode != null ? DateTime.now() : null,
         createdAt: DateTime.now(),
         phoneNumber: cleanPhone,
         isPhoneVerified: false,
@@ -226,7 +231,7 @@ class SplitwiseProvider extends ChangeNotifier {
       final welcomeAct = ActivityItem(
         id: _uuid.v4(),
         title: 'Welcome to SplitIt, $cleanName!',
-        subtitle: 'Account created. Verification code sent to email & phone.',
+        subtitle: 'Account created. Verification code sent.',
         timestamp: DateTime.now(),
         userId: newUser.id,
       );
@@ -236,23 +241,27 @@ class SplitwiseProvider extends ChangeNotifier {
           .set(welcomeAct.toJson())
           .catchError((_) {});
 
-      // Email verification notification
-      final verifyNotif = AppNotification(
-        id: _uuid.v4(),
-        recipientUserId: newUser.id,
-        recipientName: newUser.name,
-        recipientEmail: newUser.email,
-        title: 'SplitIt Email Verification Code: $emailCode',
-        body: 'Welcome to SplitIt! Your 6-digit email verification code is $emailCode. Enter it in the app to activate your account.',
-        timestamp: DateTime.now(),
-        type: 'email_verification',
-      );
-      firestore
-          .collection('notifications')
-          .doc(verifyNotif.id)
-          .set(verifyNotif.toJson())
-          .catchError((_) {});
-      _notifications.add(verifyNotif);
+      _currentUser = newUser;
+
+      // Email verification notification (only if email provided)
+      if (emailCode != null) {
+        final verifyNotif = AppNotification(
+          id: _uuid.v4(),
+          recipientUserId: newUser.id,
+          recipientName: newUser.name,
+          recipientEmail: newUser.email,
+          title: 'SplitIt Email Verification Code: $emailCode',
+          body: 'Welcome to SplitIt! Your 6-digit email verification code is $emailCode. Enter it in the app to activate your account.',
+          timestamp: DateTime.now(),
+          type: 'email_verification',
+        );
+        firestore
+            .collection('notifications')
+            .doc(verifyNotif.id)
+            .set(verifyNotif.toJson())
+            .catchError((_) {});
+        _notifications.add(verifyNotif);
+      }
 
       // Phone verification notification if phone number provided
       if (phoneCode != null) {
@@ -274,6 +283,21 @@ class SplitwiseProvider extends ChangeNotifier {
         _notifications.add(phoneNotif);
       }
 
+      // Show notifications via the notification service
+      if (emailCode != null) {
+        NotificationService().showEmailVerificationNotification(
+          email: cleanEmail,
+          code: emailCode,
+        );
+      }
+      if (phoneCode != null) {
+        NotificationService().showNotification(
+          id: 9992,
+          title: 'SplitIt SMS Code: $phoneCode',
+          body: 'Your SplitIt phone verification code is $phoneCode.',
+        );
+      }
+
       _currentUser = newUser;
       if (!_users.any((u) => u.id == newUser.id)) {
         _users.add(newUser);
@@ -284,21 +308,6 @@ class SplitwiseProvider extends ChangeNotifier {
         await prefs.setString('active_user_id', newUser.id);
       } catch (prefErr) {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
-      }
-
-      // Native phone notification with verification code
-      NotificationService().showEmailVerificationNotification(
-        email: newUser.email,
-        code: emailCode,
-      );
-
-      // Show SMS notification if phone provided
-      if (phoneCode != null) {
-        NotificationService().showNotification(
-          id: 9991,
-          title: 'SplitIt SMS Code: $phoneCode',
-          body: 'Your SplitIt phone verification code is $phoneCode.',
-        );
       }
 
       notifyListeners();

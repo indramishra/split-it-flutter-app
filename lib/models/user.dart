@@ -1,7 +1,7 @@
 class User {
   final String id;
   final String name;
-  final String email;
+  final String email; // empty string if not provided
   final String? avatarUrl;
   final String? password;
   final DateTime? createdAt;
@@ -131,7 +131,7 @@ class User {
   factory User.fromJson(Map<String, dynamic> json) => User(
         id: json['id'] as String,
         name: json['name'] as String,
-        email: json['email'] as String,
+        email: json['email'] as String? ?? '',
         avatarUrl: json['avatarUrl'] as String?,
         password: json['password'] as String?,
         createdAt: json['createdAt'] != null
