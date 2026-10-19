@@ -10,6 +10,14 @@ class User {
   final DateTime? verificationCodeSentAt;
   final String? resetPasswordCode;
   final DateTime? resetPasswordCodeSentAt;
+  // Explicit friends list — only users this user has added as friends
+  final List<String> friendIds;
+
+  // Phone / SMS verification fields
+  final String? phoneNumber;
+  final bool isPhoneVerified;
+  final String? phoneVerificationCode;
+  final DateTime? phoneVerificationCodeSentAt;
 
   const User({
     required this.id,
@@ -23,6 +31,11 @@ class User {
     this.verificationCodeSentAt,
     this.resetPasswordCode,
     this.resetPasswordCodeSentAt,
+    this.friendIds = const [],
+    this.phoneNumber,
+    this.isPhoneVerified = false,
+    this.phoneVerificationCode,
+    this.phoneVerificationCodeSentAt,
   });
 
   User copyWith({
@@ -34,9 +47,17 @@ class User {
     DateTime? createdAt,
     bool? isEmailVerified,
     String? verificationCode,
+    bool clearVerificationCode = false,
     DateTime? verificationCodeSentAt,
     String? resetPasswordCode,
+    bool clearResetPasswordCode = false,
     DateTime? resetPasswordCodeSentAt,
+    List<String>? friendIds,
+    String? phoneNumber,
+    bool? isPhoneVerified,
+    String? phoneVerificationCode,
+    bool clearPhoneVerificationCode = false,
+    DateTime? phoneVerificationCodeSentAt,
   }) {
     return User(
       id: id ?? this.id,
@@ -46,14 +67,41 @@ class User {
       password: password ?? this.password,
       createdAt: createdAt ?? this.createdAt,
       isEmailVerified: isEmailVerified ?? this.isEmailVerified,
-      verificationCode: verificationCode ?? this.verificationCode,
-      verificationCodeSentAt:
-          verificationCodeSentAt ?? this.verificationCodeSentAt,
-      resetPasswordCode: resetPasswordCode ?? this.resetPasswordCode,
-      resetPasswordCodeSentAt:
-          resetPasswordCodeSentAt ?? this.resetPasswordCodeSentAt,
+      verificationCode: clearVerificationCode
+          ? null
+          : (verificationCode ?? this.verificationCode),
+      verificationCodeSentAt: clearVerificationCode
+          ? null
+          : (verificationCodeSentAt ?? this.verificationCodeSentAt),
+      resetPasswordCode: clearResetPasswordCode
+          ? null
+          : (resetPasswordCode ?? this.resetPasswordCode),
+      resetPasswordCodeSentAt: clearResetPasswordCode
+          ? null
+          : (resetPasswordCodeSentAt ?? this.resetPasswordCodeSentAt),
+      friendIds: friendIds ?? this.friendIds,
+      phoneNumber: phoneNumber ?? this.phoneNumber,
+      isPhoneVerified: isPhoneVerified ?? this.isPhoneVerified,
+      phoneVerificationCode: clearPhoneVerificationCode
+          ? null
+          : (phoneVerificationCode ?? this.phoneVerificationCode),
+      phoneVerificationCodeSentAt: clearPhoneVerificationCode
+          ? null
+          : (phoneVerificationCodeSentAt ?? this.phoneVerificationCodeSentAt),
     );
   }
+
+  Map<String, dynamic> toPublicJson() => {
+        'id': id,
+        'name': name,
+        'email': email,
+        'avatarUrl': avatarUrl,
+        'createdAt': (createdAt ?? DateTime.now()).toIso8601String(),
+        'isEmailVerified': isEmailVerified,
+        'friendIds': friendIds,
+        if (phoneNumber != null) 'phoneNumber': phoneNumber,
+        'isPhoneVerified': isPhoneVerified,
+      };
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -68,7 +116,16 @@ class User {
           'verificationCodeSentAt': verificationCodeSentAt!.toIso8601String(),
         if (resetPasswordCode != null) 'resetPasswordCode': resetPasswordCode,
         if (resetPasswordCodeSentAt != null)
-          'resetPasswordCodeSentAt': resetPasswordCodeSentAt!.toIso8601String(),
+          'resetPasswordCodeSentAt':
+              resetPasswordCodeSentAt!.toIso8601String(),
+        'friendIds': friendIds,
+        if (phoneNumber != null) 'phoneNumber': phoneNumber,
+        'isPhoneVerified': isPhoneVerified,
+        if (phoneVerificationCode != null)
+          'phoneVerificationCode': phoneVerificationCode,
+        if (phoneVerificationCodeSentAt != null)
+          'phoneVerificationCodeSentAt':
+              phoneVerificationCodeSentAt!.toIso8601String(),
       };
 
   factory User.fromJson(Map<String, dynamic> json) => User(
@@ -80,7 +137,8 @@ class User {
         createdAt: json['createdAt'] != null
             ? DateTime.tryParse(json['createdAt'] as String)
             : null,
-        isEmailVerified: json['isEmailVerified'] as bool? ?? true,
+        // BUG FIX: was defaulting to `true`, causing new users to skip OTP verification
+        isEmailVerified: json['isEmailVerified'] as bool? ?? false,
         verificationCode: json['verificationCode'] as String?,
         verificationCodeSentAt: json['verificationCodeSentAt'] != null
             ? DateTime.tryParse(json['verificationCodeSentAt'] as String)
@@ -88,6 +146,15 @@ class User {
         resetPasswordCode: json['resetPasswordCode'] as String?,
         resetPasswordCodeSentAt: json['resetPasswordCodeSentAt'] != null
             ? DateTime.tryParse(json['resetPasswordCodeSentAt'] as String)
+            : null,
+        friendIds:
+            (json['friendIds'] as List<dynamic>?)?.cast<String>() ??
+                const [],
+        phoneNumber: json['phoneNumber'] as String?,
+        isPhoneVerified: json['isPhoneVerified'] as bool? ?? false,
+        phoneVerificationCode: json['phoneVerificationCode'] as String?,
+        phoneVerificationCodeSentAt: json['phoneVerificationCodeSentAt'] != null
+            ? DateTime.tryParse(json['phoneVerificationCodeSentAt'] as String)
             : null,
       );
 }

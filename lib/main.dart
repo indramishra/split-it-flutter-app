@@ -82,7 +82,13 @@ class SplitItRoot extends StatelessWidget {
       return const AuthScreen();
     }
 
-    if (!provider.currentUser.isEmailVerified) {
+    final user = provider.currentUser;
+    final needsEmail = !user.isEmailVerified;
+    final needsPhone = user.phoneNumber != null &&
+        user.phoneNumber!.isNotEmpty &&
+        !user.isPhoneVerified;
+
+    if (needsEmail || needsPhone) {
       return const EmailVerificationScreen();
     }
 

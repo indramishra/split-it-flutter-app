@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_contacts/flutter_contacts.dart' hide Group;
+import 'package:permission_handler/permission_handler.dart';
 import '../models/user.dart';
 import '../models/group.dart';
 import '../models/expense.dart';
@@ -28,45 +30,15 @@ class SplitwiseProvider extends ChangeNotifier {
   // Currency symbol
   String _currency = '₹';
 
-  // Firestore Subscriptions
-  StreamSubscription? _usersSub;
+  // Firestore Subscriptions (User-Scoped)
+  StreamSubscription? _currentUserSub;
   StreamSubscription? _groupsSub;
   StreamSubscription? _expensesSub;
   StreamSubscription? _activitiesSub;
   StreamSubscription? _notificationsSub;
 
-  // Legacy test data IDs to filter and purge
-  static const Set<String> _legacyMockUserIds = {
-    'usr_me',
-    'usr_rahul',
-    'usr_priya',
-    'usr_amit',
-    'usr_sneha',
-  };
-  static const Set<String> _legacyMockGroupIds = {
-    'grp_apt',
-    'grp_goa',
-  };
-  static const Set<String> _legacyMockExpenseIds = {
-    'exp_1',
-    'exp_2',
-    'exp_3',
-    'exp_4',
-  };
-  static const Set<String> _legacyMockNotifIds = {
-    'notif_1',
-    'notif_2',
-    'notif_3',
-    'notif_4',
-  };
-  static const Set<String> _legacyMockActivityIds = {
-    'act_1',
-    'act_2',
-  };
-
   SplitwiseProvider() {
     _initAuth();
-    _initFirestoreSync();
   }
 
   // Getters
@@ -75,68 +47,30 @@ class SplitwiseProvider extends ChangeNotifier {
   User get currentUser =>
       _currentUser ?? const User(id: '', name: 'Guest', email: '');
   List<User> get users => List.unmodifiable(_users);
-  List<User> get friends =>
-      _users.where((u) => u.id != (_currentUser?.id ?? '')).toList();
-  // Scoped to groups the current user is a member of
-  List<Group> get groups {
+  /// Only users explicitly added as friends by the current user.
+  List<User> get friends {
     final myId = _currentUser?.id ?? '';
     if (myId.isEmpty) return const [];
-    return List.unmodifiable(
-        _groups.where((g) => g.memberIds.contains(myId)).toList());
+    final myFriendIds = _currentUser?.friendIds ?? const [];
+    return _users
+        .where((u) => u.id != myId && myFriendIds.contains(u.id))
+        .toList();
   }
+  // Groups the current user is a member of (scoped via Firestore query)
+  List<Group> get groups => List.unmodifiable(_groups);
 
   // Unscoped list of all groups if needed internally
   List<Group> get allGroups => List.unmodifiable(_groups);
 
   List<Expense> get expenses => List.unmodifiable(_expenses);
 
-  List<ActivityItem> get activities {
-    final myId = _currentUser?.id ?? '';
-    if (myId.isEmpty) return const [];
-    final myGroupIds = groups.map((g) => g.id).toSet();
-    return List.unmodifiable(
-      _activities.where((a) {
-        if (a.userId != null && a.userId == myId) return true;
-        if (a.groupId != null && myGroupIds.contains(a.groupId)) return true;
-        if (a.expenseId != null) {
-          final exp = _expenses.where((e) => e.id == a.expenseId).firstOrNull;
-          if (exp != null) {
-            return exp.paidByUserId == myId ||
-                exp.splitShares.containsKey(myId) ||
-                myGroupIds.contains(exp.groupId);
-          }
-        }
-        if (a.userId == null && a.groupId == null && a.expenseId == null) {
-          final myName = _currentUser?.name ?? '';
-          if (myName.isNotEmpty &&
-              (a.title.contains(myName) || a.subtitle.contains(myName))) {
-            return true;
-          }
-        }
-        return false;
-      }).toList()
-        ..sort((a, b) => b.timestamp.compareTo(a.timestamp)),
-    );
-  }
+  List<ActivityItem> get activities => List.unmodifiable(_activities);
 
-  List<AppNotification> get notifications {
-    final myId = _currentUser?.id ?? '';
-    if (myId.isEmpty) return const [];
-    final myGroupIds = groups.map((g) => g.id).toSet();
-    return List.unmodifiable(
-      _notifications.where((n) {
-        return n.recipientUserId == myId ||
-            (n.groupId != null && myGroupIds.contains(n.groupId));
-      }).toList()
-        ..sort((a, b) => b.timestamp.compareTo(a.timestamp)),
-    );
-  }
+  List<AppNotification> get notifications => List.unmodifiable(_notifications);
 
-  int get unreadNotificationCount => _notifications
-      .where((n) => !n.isRead && n.recipientUserId == (_currentUser?.id ?? ''))
-      .length;
-  int get totalUnreadAllMembersCount =>
+  int get unreadNotificationCount =>
       _notifications.where((n) => !n.isRead).length;
+  int get totalUnreadAllMembersCount => unreadNotificationCount;
   String get currency => _currency;
 
   void setCurrency(String newCurrency) {
@@ -151,6 +85,7 @@ class SplitwiseProvider extends ChangeNotifier {
       SharedPreferences.getInstance().then((prefs) {
         prefs.setString('active_user_id', user.id);
       });
+      _bindUserStreams();
       notifyListeners();
     }
   }
@@ -159,7 +94,24 @@ class SplitwiseProvider extends ChangeNotifier {
     try {
       return _users.firstWhere((u) => u.id == userId);
     } catch (_) {
+      _fetchSingleUser(userId);
       return null;
+    }
+  }
+
+  Future<void> _fetchSingleUser(String userId) async {
+    if (userId.isEmpty || _users.any((u) => u.id == userId)) return;
+    try {
+      final doc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      if (doc.exists && doc.data() != null) {
+        final u = User.fromJson(doc.data()!);
+        if (!_users.any((x) => x.id == u.id)) {
+          _users.add(u);
+          notifyListeners();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching single user $userId: $e');
     }
   }
 
@@ -186,9 +138,13 @@ class SplitwiseProvider extends ChangeNotifier {
             .get();
         if (doc.exists && doc.data() != null) {
           _currentUser = User.fromJson(doc.data()!);
+          if (!_users.any((u) => u.id == _currentUser!.id)) {
+            _users.add(_currentUser!);
+          }
+          _bindUserStreams();
         } else {
-          final user = _users.where((u) => u.id == savedUserId).firstOrNull;
-          if (user != null) _currentUser = user;
+          await prefs.remove('active_user_id');
+          _currentUser = null;
         }
       }
     } catch (e) {
@@ -203,9 +159,11 @@ class SplitwiseProvider extends ChangeNotifier {
     required String name,
     required String email,
     required String password,
+    String? phoneNumber,
   }) async {
     final cleanName = name.trim();
     final cleanEmail = email.trim().toLowerCase();
+    final cleanPhone = phoneNumber?.trim();
     if (cleanName.isEmpty) return 'Please enter your full name.';
     if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
       return 'Please enter a valid email address.';
@@ -216,26 +174,47 @@ class SplitwiseProvider extends ChangeNotifier {
 
     try {
       final firestore = FirebaseFirestore.instance;
+
+      // Check email uniqueness
       final existing = await firestore
           .collection('users')
           .where('email', isEqualTo: cleanEmail)
           .limit(1)
           .get();
-
       if (existing.docs.isNotEmpty) {
         return 'An account with this email already exists. Please log in.';
       }
 
-      final code = (100000 + Random().nextInt(900000)).toString();
+      // Check phone uniqueness if provided
+      if (cleanPhone != null && cleanPhone.isNotEmpty) {
+        final phoneExisting = await firestore
+            .collection('users')
+            .where('phoneNumber', isEqualTo: cleanPhone)
+            .limit(1)
+            .get();
+        if (phoneExisting.docs.isNotEmpty) {
+          return 'An account with this phone number already exists.';
+        }
+      }
+
+      final emailCode = (100000 + Random().nextInt(900000)).toString();
+      final phoneCode = cleanPhone != null && cleanPhone.isNotEmpty
+          ? (100000 + Random().nextInt(900000)).toString()
+          : null;
+
       final newUser = User(
         id: _uuid.v4(),
         name: cleanName,
         email: cleanEmail,
         password: password,
         isEmailVerified: false,
-        verificationCode: code,
+        verificationCode: emailCode,
         verificationCodeSentAt: DateTime.now(),
         createdAt: DateTime.now(),
+        phoneNumber: cleanPhone,
+        isPhoneVerified: false,
+        phoneVerificationCode: phoneCode,
+        phoneVerificationCodeSentAt: phoneCode != null ? DateTime.now() : null,
       );
 
       await firestore
@@ -257,14 +236,14 @@ class SplitwiseProvider extends ChangeNotifier {
           .set(welcomeAct.toJson())
           .catchError((_) {});
 
-      // Verification notification
+      // Email verification notification
       final verifyNotif = AppNotification(
         id: _uuid.v4(),
         recipientUserId: newUser.id,
         recipientName: newUser.name,
         recipientEmail: newUser.email,
-        title: 'SplitIt Verification Code: $code',
-        body: 'Welcome to SplitIt! Your 6-digit verification code is $code. Enter it in the app to activate your account.',
+        title: 'SplitIt Email Verification Code: $emailCode',
+        body: 'Welcome to SplitIt! Your 6-digit email verification code is $emailCode. Enter it in the app to activate your account.',
         timestamp: DateTime.now(),
         type: 'email_verification',
       );
@@ -274,6 +253,26 @@ class SplitwiseProvider extends ChangeNotifier {
           .set(verifyNotif.toJson())
           .catchError((_) {});
       _notifications.add(verifyNotif);
+
+      // Phone verification notification if phone number provided
+      if (phoneCode != null) {
+        final phoneNotif = AppNotification(
+          id: _uuid.v4(),
+          recipientUserId: newUser.id,
+          recipientName: newUser.name,
+          recipientEmail: newUser.email,
+          title: 'SplitIt SMS Code: $phoneCode',
+          body: 'Your SplitIt phone verification code is $phoneCode. Enter it to verify your phone number.',
+          timestamp: DateTime.now(),
+          type: 'phone_verification',
+        );
+        firestore
+            .collection('notifications')
+            .doc(phoneNotif.id)
+            .set(phoneNotif.toJson())
+            .catchError((_) {});
+        _notifications.add(phoneNotif);
+      }
 
       _currentUser = newUser;
       if (!_users.any((u) => u.id == newUser.id)) {
@@ -290,8 +289,17 @@ class SplitwiseProvider extends ChangeNotifier {
       // Native phone notification with verification code
       NotificationService().showEmailVerificationNotification(
         email: newUser.email,
-        code: code,
+        code: emailCode,
       );
+
+      // Show SMS notification if phone provided
+      if (phoneCode != null) {
+        NotificationService().showNotification(
+          id: 9991,
+          title: 'SplitIt SMS Code: $phoneCode',
+          body: 'Your SplitIt phone verification code is $phoneCode.',
+        );
+      }
 
       notifyListeners();
       return null;
@@ -305,41 +313,74 @@ class SplitwiseProvider extends ChangeNotifier {
     required String email,
     required String password,
   }) async {
-    final cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail.isEmpty || !cleanEmail.contains('@')) {
-      return 'Please enter a valid email address.';
+    final cleanInput = email.trim();
+    if (cleanInput.isEmpty) {
+      return 'Please enter your email or phone number.';
     }
     if (password.isEmpty) {
       return 'Please enter your password.';
     }
 
+    final isEmail = cleanInput.contains('@');
+    final cleanEmail = cleanInput.toLowerCase();
+    final cleanPhone = cleanInput.replaceAll(RegExp(r'[\s\-().]'), '');
+
     try {
       final firestore = FirebaseFirestore.instance;
-      final snap = await firestore
-          .collection('users')
-          .where('email', isEqualTo: cleanEmail)
-          .limit(1)
-          .get();
+      User? user;
 
-      if (snap.docs.isEmpty) {
-        final inMem = _users
-            .where((u) => u.email.toLowerCase() == cleanEmail)
-            .firstOrNull;
-        if (inMem == null) {
-          return 'No account found with this email. Please register.';
+      if (isEmail) {
+        final snap = await firestore
+            .collection('users')
+            .where('email', isEqualTo: cleanEmail)
+            .limit(1)
+            .get();
+        if (snap.docs.isNotEmpty) {
+          user = User.fromJson(snap.docs.first.data());
         }
-        if (inMem.password != null && inMem.password != password) {
-          return 'Incorrect password. Please try again.';
-        }
-        _currentUser = inMem;
       } else {
-        final userData = snap.docs.first.data();
-        final user = User.fromJson(userData);
-        if (user.password != null && user.password != password) {
-          return 'Incorrect password. Please try again.';
+        // Query phone number
+        final snap = await firestore
+            .collection('users')
+            .where('phoneNumber', isEqualTo: cleanInput)
+            .limit(1)
+            .get();
+        if (snap.docs.isNotEmpty) {
+          user = User.fromJson(snap.docs.first.data());
+        } else {
+          // Try with stripped phone digits
+          final snapDigits = await firestore
+              .collection('users')
+              .where('phoneNumber', isEqualTo: cleanPhone)
+              .limit(1)
+              .get();
+          if (snapDigits.docs.isNotEmpty) {
+            user = User.fromJson(snapDigits.docs.first.data());
+          }
         }
-        _currentUser = user;
       }
+
+      // Fallback to in-memory search
+      user ??= _users.where((u) {
+        if (isEmail) {
+          return u.email.toLowerCase() == cleanEmail;
+        } else {
+          final uPhone = u.phoneNumber?.replaceAll(RegExp(r'[\s\-().]'), '') ?? '';
+          return u.phoneNumber == cleanInput || (uPhone.isNotEmpty && uPhone == cleanPhone);
+        }
+      }).firstOrNull;
+
+      if (user == null) {
+        return isEmail
+            ? 'No account found with this email. Please register.'
+            : 'No account found with this phone number. Please register.';
+      }
+
+      if (user.password != null && user.password != password) {
+        return 'Incorrect password. Please try again.';
+      }
+
+      _currentUser = user;
 
       try {
         final prefs = await SharedPreferences.getInstance();
@@ -348,13 +389,28 @@ class SplitwiseProvider extends ChangeNotifier {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
       }
 
-      if (_currentUser != null && !_currentUser!.isEmailVerified) {
+      // Check if email or phone verification is needed
+      if (!_currentUser!.isEmailVerified) {
         if (_currentUser!.verificationCode == null) {
           sendEmailVerificationCode();
         } else {
           NotificationService().showEmailVerificationNotification(
             email: _currentUser!.email,
             code: _currentUser!.verificationCode!,
+          );
+        }
+      }
+
+      if (_currentUser!.phoneNumber != null &&
+          _currentUser!.phoneNumber!.isNotEmpty &&
+          !_currentUser!.isPhoneVerified) {
+        if (_currentUser!.phoneVerificationCode == null) {
+          sendPhoneVerificationCode();
+        } else {
+          NotificationService().showNotification(
+            id: 9991,
+            title: 'SplitIt SMS Code: ${_currentUser!.phoneVerificationCode}',
+            body: 'Your SplitIt phone verification code is ${_currentUser!.phoneVerificationCode}.',
           );
         }
       }
@@ -441,7 +497,7 @@ class SplitwiseProvider extends ChangeNotifier {
 
     final updatedUser = _currentUser!.copyWith(
       isEmailVerified: true,
-      verificationCode: null,
+      clearVerificationCode: true,
     );
     _currentUser = updatedUser;
 
@@ -475,6 +531,209 @@ class SplitwiseProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('Error verifying email: $e');
       return 'Failed to update verification status: $e';
+    }
+  }
+
+  // ==========================================
+  // PHONE VERIFICATION
+  // ==========================================
+
+  Future<String?> sendPhoneVerificationCode() async {
+    if (_currentUser == null) return 'No user is currently signed in.';
+    if (_currentUser!.phoneNumber == null || _currentUser!.phoneNumber!.isEmpty) {
+      return 'No phone number linked to this account.';
+    }
+    final code = (100000 + Random().nextInt(900000)).toString();
+    final updatedUser = _currentUser!.copyWith(
+      phoneVerificationCode: code,
+      phoneVerificationCodeSentAt: DateTime.now(),
+    );
+    _currentUser = updatedUser;
+
+    final notif = AppNotification(
+      id: _uuid.v4(),
+      recipientUserId: updatedUser.id,
+      recipientName: updatedUser.name,
+      recipientEmail: updatedUser.email,
+      title: 'SplitIt SMS Code: $code',
+      body: 'Your SplitIt phone verification code is $code.',
+      timestamp: DateTime.now(),
+      type: 'phone_verification',
+    );
+    _notifications.add(notif);
+    notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'phoneVerificationCode': code,
+        'phoneVerificationCodeSentAt': DateTime.now().toIso8601String(),
+      });
+      batch.set(
+          firestore.collection('notifications').doc(notif.id), notif.toJson());
+      await batch.commit();
+      await NotificationService().showNotification(
+        id: 9994,
+        title: 'SplitIt SMS: $code',
+        body:
+            'Your phone verification code is $code. Enter it in the app.',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Error sending phone verification code: $e');
+      return 'Failed to send phone verification code: $e';
+    }
+  }
+
+  Future<String?> verifyPhone(String code) async {
+    if (_currentUser == null) return 'No user is currently signed in.';
+    final cleanCode = code.trim();
+    final userCode = _currentUser!.phoneVerificationCode?.trim();
+
+    if (userCode == null || userCode.isEmpty) {
+      return 'No pending phone verification code. Please request a new one.';
+    }
+    if (userCode != cleanCode) {
+      return 'Invalid phone verification code. Please check your notifications.';
+    }
+
+    // Check expiry (15 minutes)
+    if (_currentUser!.phoneVerificationCodeSentAt != null) {
+      final age = DateTime.now()
+          .difference(_currentUser!.phoneVerificationCodeSentAt!);
+      if (age.inMinutes > 15) {
+        return 'Phone verification code has expired. Please request a new one.';
+      }
+    }
+
+    final updatedUser = _currentUser!.copyWith(
+      isPhoneVerified: true,
+      clearPhoneVerificationCode: true,
+    );
+    _currentUser = updatedUser;
+
+    final verifyAct = ActivityItem(
+      id: _uuid.v4(),
+      title: 'Phone verified',
+      subtitle: '${updatedUser.phoneNumber} was confirmed',
+      timestamp: DateTime.now(),
+      userId: updatedUser.id,
+    );
+    _activities.add(verifyAct);
+    notifyListeners();
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(updatedUser.id), {
+        'isPhoneVerified': true,
+        'phoneVerificationCode': FieldValue.delete(),
+      });
+      batch.set(
+          firestore.collection('activities').doc(verifyAct.id),
+          verifyAct.toJson());
+      await batch.commit();
+      await NotificationService().showNotification(
+        id: 9995,
+        title: 'Phone Verified',
+        body: 'Your phone number is now verified on SplitIt!',
+      );
+      return null;
+    } catch (e) {
+      debugPrint('Error verifying phone: $e');
+      return 'Failed to update phone verification status: $e';
+    }
+  }
+
+  // ==========================================
+  // CONTACT LIST FRIEND SEARCH
+  // ==========================================
+
+  /// Requests contact permission and returns a list of [User]s from Firestore
+  /// whose phone or email matches any contact on the device.
+  Future<ContactFriendResult> searchContactFriends() async {
+    // Request contacts permission
+    final status = await Permission.contacts.request();
+    if (status.isDenied || status.isPermanentlyDenied) {
+      return ContactFriendResult(
+        permissionDenied: true,
+        friends: [],
+        contactsCount: 0,
+      );
+    }
+
+    try {
+      final contacts = await FlutterContacts.getContacts(
+        withProperties: true,
+      );
+
+      final phones = <String>{};
+      final emails = <String>{};
+      for (final c in contacts) {
+        for (final p in c.phones) {
+          final normalized = p.number.replaceAll(RegExp(r'[\s\-().+]'), '');
+          if (normalized.isNotEmpty) phones.add(normalized);
+        }
+        for (final e in c.emails) {
+          final addr = e.address.trim().toLowerCase();
+          if (addr.isNotEmpty) emails.add(addr);
+        }
+      }
+
+      final myId = _currentUser?.id ?? '';
+      final matchedFriends = <User>{};
+
+      final firestore = FirebaseFirestore.instance;
+
+      // Batch query Firestore for contacts matching email (max 30 per whereIn)
+      final emailList = emails.toList();
+      for (var i = 0; i < emailList.length; i += 30) {
+        final chunk = emailList.sublist(i, min(i + 30, emailList.length));
+        final snap = await firestore
+            .collection('users')
+            .where('email', whereIn: chunk)
+            .get();
+        for (final doc in snap.docs) {
+          final u = User.fromJson(doc.data());
+          if (u.id != myId) matchedFriends.add(u);
+        }
+      }
+
+      // Batch query Firestore for contacts matching phone (max 30 per whereIn)
+      final phoneList = phones.toList();
+      for (var i = 0; i < phoneList.length; i += 30) {
+        final chunk = phoneList.sublist(i, min(i + 30, phoneList.length));
+        final snap = await firestore
+            .collection('users')
+            .where('phoneNumber', whereIn: chunk)
+            .get();
+        for (final doc in snap.docs) {
+          final u = User.fromJson(doc.data());
+          if (u.id != myId) matchedFriends.add(u);
+        }
+      }
+
+      // Cache matched users locally
+      for (final u in matchedFriends) {
+        if (!_users.any((x) => x.id == u.id)) {
+          _users.add(u);
+        }
+      }
+
+      return ContactFriendResult(
+        permissionDenied: false,
+        friends: matchedFriends.toList(),
+        contactsCount: contacts.length,
+      );
+    } catch (e) {
+      debugPrint('Contact search error: $e');
+      return ContactFriendResult(
+        permissionDenied: false,
+        friends: [],
+        contactsCount: 0,
+        error: e.toString(),
+      );
     }
   }
 
@@ -608,7 +867,7 @@ class SplitwiseProvider extends ChangeNotifier {
 
       final updatedUser = targetUser.copyWith(
         password: newPassword,
-        resetPasswordCode: null,
+        clearResetPasswordCode: true,
       );
 
       final index = _users.indexWhere((u) => u.id == targetUser!.id);
@@ -664,108 +923,137 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
+
   // ==========================================
-  // PURGE LEGACY TESTING DATA
+  // PURGE ALL DATA
   // ==========================================
 
   Future<void> purgeLegacyTestData() async {
+    await purgeAllData();
+  }
+
+  Future<void> purgeAllData() async {
     try {
       final firestore = FirebaseFirestore.instance;
+      final uSnap = await firestore.collection('users').get();
+      final gSnap = await firestore.collection('groups').get();
+      final eSnap = await firestore.collection('expenses').get();
+      final aSnap = await firestore.collection('activities').get();
+      final nSnap = await firestore.collection('notifications').get();
+
       final batch = firestore.batch();
-
-      for (final id in _legacyMockUserIds) {
-        batch.delete(firestore.collection('users').doc(id));
+      for (final doc in uSnap.docs) {
+        batch.delete(doc.reference);
       }
-      for (final id in _legacyMockGroupIds) {
-        batch.delete(firestore.collection('groups').doc(id));
+      for (final doc in gSnap.docs) {
+        batch.delete(doc.reference);
       }
-      for (final id in _legacyMockExpenseIds) {
-        batch.delete(firestore.collection('expenses').doc(id));
+      for (final doc in eSnap.docs) {
+        batch.delete(doc.reference);
       }
-      for (final id in _legacyMockActivityIds) {
-        batch.delete(firestore.collection('activities').doc(id));
+      for (final doc in aSnap.docs) {
+        batch.delete(doc.reference);
       }
-      for (final id in _legacyMockNotifIds) {
-        batch.delete(firestore.collection('notifications').doc(id));
+      for (final doc in nSnap.docs) {
+        batch.delete(doc.reference);
       }
-
       await batch.commit();
-      debugPrint('Legacy testing data successfully purged from Firestore.');
-    } catch (e) {
-      debugPrint('Error purging legacy test data: $e');
-    }
 
-    _users.removeWhere((u) => _legacyMockUserIds.contains(u.id));
-    _groups.removeWhere((g) => _legacyMockGroupIds.contains(g.id));
-    _expenses.removeWhere((e) => _legacyMockExpenseIds.contains(e.id));
-    _activities.removeWhere((a) => _legacyMockActivityIds.contains(a.id));
-    _notifications.removeWhere((n) => _legacyMockNotifIds.contains(n.id));
-    notifyListeners();
+      _cancelUserStreams();
+      _users.clear();
+      _groups.clear();
+      _expenses.clear();
+      _activities.clear();
+      _notifications.clear();
+      _currentUser = null;
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('active_user_id');
+
+      notifyListeners();
+      debugPrint('All Firestore data and local state successfully purged.');
+    } catch (e) {
+      debugPrint('Error purging data: $e');
+    }
   }
 
   // ==========================================
-  // FIRESTORE SYNC & STREAMS
+  // FIRESTORE SCOPED USER SYNC & STREAMS
   // ==========================================
 
-  void _initFirestoreSync() {
+  void _bindUserStreams() {
+    _cancelUserStreams();
+    final myId = _currentUser?.id ?? '';
+    if (myId.isEmpty) return;
+
     try {
       final firestore = FirebaseFirestore.instance;
 
-      purgeLegacyTestData();
-
-      _usersSub = firestore.collection('users').snapshots().listen((snap) {
-        final newUsers = snap.docs
-            .map((d) => User.fromJson(d.data()))
-            .where((u) => !_legacyMockUserIds.contains(u.id))
-            .toList();
-        _users.clear();
-        _users.addAll(newUsers);
-
-        if (_currentUser != null) {
-          final matched = _users.where((u) => u.id == _currentUser!.id).firstOrNull;
-          if (matched != null) {
-            _currentUser = matched;
+      // 1. Current user doc stream
+      _currentUserSub = firestore.collection('users').doc(myId).snapshots().listen((snap) {
+        if (snap.exists && snap.data() != null) {
+          final updated = User.fromJson(snap.data()!);
+          _currentUser = updated;
+          final idx = _users.indexWhere((u) => u.id == myId);
+          if (idx != -1) {
+            _users[idx] = updated;
+          } else {
+            _users.add(updated);
           }
+          _syncRelatedUsers();
+          notifyListeners();
         }
-        notifyListeners();
-      }, onError: (e) => debugPrint('Users stream error: $e'));
+      }, onError: (e) => debugPrint('Current user stream error: $e'));
 
-      _groupsSub = firestore.collection('groups').snapshots().listen((snap) {
-        final newGroups = snap.docs
-            .map((d) => Group.fromJson(d.data()))
-            .where((g) => !_legacyMockGroupIds.contains(g.id))
-            .toList();
+      // 2. Groups stream: Scoped to groups where memberIds contains myId
+      _groupsSub = firestore
+          .collection('groups')
+          .where('memberIds', arrayContains: myId)
+          .snapshots()
+          .listen((snap) {
         _groups.clear();
-        _groups.addAll(newGroups);
+        for (final doc in snap.docs) {
+          _groups.add(Group.fromJson(doc.data()));
+        }
+        _syncRelatedUsers();
         notifyListeners();
       }, onError: (e) => debugPrint('Groups stream error: $e'));
 
-      _expensesSub = firestore.collection('expenses').snapshots().listen((snap) {
-        final newExpenses = snap.docs
-            .map((d) => Expense.fromJson(d.data()))
-            .where((e) => !_legacyMockExpenseIds.contains(e.id))
-            .toList();
+      // 3. Expenses stream: Scoped to expenses where participantIds contains myId
+      _expensesSub = firestore
+          .collection('expenses')
+          .where('participantIds', arrayContains: myId)
+          .snapshots()
+          .listen((snap) {
         _expenses.clear();
-        _expenses.addAll(newExpenses);
+        for (final doc in snap.docs) {
+          _expenses.add(Expense.fromJson(doc.data()));
+        }
         notifyListeners();
       }, onError: (e) => debugPrint('Expenses stream error: $e'));
 
-      _activitiesSub = firestore.collection('activities').snapshots().listen((snap) {
-        final newActivities = snap.docs
-            .map((d) => ActivityItem.fromJson(d.data()))
-            .where((a) => !_legacyMockActivityIds.contains(a.id))
-            .toList();
+      // 4. Activities stream: Scoped to activities where audienceUserIds contains myId
+      _activitiesSub = firestore
+          .collection('activities')
+          .where('audienceUserIds', arrayContains: myId)
+          .snapshots()
+          .listen((snap) {
         _activities.clear();
-        _activities.addAll(newActivities);
+        for (final doc in snap.docs) {
+          _activities.add(ActivityItem.fromJson(doc.data()));
+        }
+        _activities.sort((a, b) => b.timestamp.compareTo(a.timestamp));
         notifyListeners();
       }, onError: (e) => debugPrint('Activities stream error: $e'));
 
+      // 5. Notifications stream: Scoped to notifications where recipientUserId == myId
       bool isInitialNotifsLoad = true;
-      _notificationsSub = firestore.collection('notifications').snapshots().listen((snap) {
-        final newNotifs = snap.docs
-            .map((d) => AppNotification.fromJson(d.data()))
-            .where((n) => !_legacyMockNotifIds.contains(n.id))
-            .toList();
+      _notificationsSub = firestore
+          .collection('notifications')
+          .where('recipientUserId', isEqualTo: myId)
+          .snapshots()
+          .listen((snap) {
+        final newNotifs = snap.docs.map((d) => AppNotification.fromJson(d.data())).toList();
 
         if (!isInitialNotifsLoad) {
           for (final change in snap.docChanges) {
@@ -773,9 +1061,7 @@ class SplitwiseProvider extends ChangeNotifier {
               final data = change.doc.data();
               if (data != null) {
                 final notif = AppNotification.fromJson(data);
-                final myId = _currentUser?.id ?? '';
-                if (myId.isNotEmpty &&
-                    notif.recipientUserId == myId &&
+                if (notif.recipientUserId == myId &&
                     notif.type != 'email_verification') {
                   NotificationService().showNotification(
                     title: notif.title,
@@ -791,10 +1077,62 @@ class SplitwiseProvider extends ChangeNotifier {
 
         _notifications.clear();
         _notifications.addAll(newNotifs);
+        _notifications.sort((a, b) => b.timestamp.compareTo(a.timestamp));
         notifyListeners();
       }, onError: (e) => debugPrint('Notifications stream error: $e'));
     } catch (e) {
-      debugPrint('Firestore initialization error: $e');
+      debugPrint('Error binding user streams: $e');
+    }
+  }
+
+  void _cancelUserStreams() {
+    _currentUserSub?.cancel();
+    _currentUserSub = null;
+    _groupsSub?.cancel();
+    _groupsSub = null;
+    _expensesSub?.cancel();
+    _expensesSub = null;
+    _activitiesSub?.cancel();
+    _activitiesSub = null;
+    _notificationsSub?.cancel();
+    _notificationsSub = null;
+  }
+
+  Future<void> _syncRelatedUsers() async {
+    final myId = _currentUser?.id ?? '';
+    if (myId.isEmpty) return;
+
+    final neededUserIds = <String>{};
+    neededUserIds.addAll(_currentUser?.friendIds ?? []);
+    for (final g in _groups) {
+      neededUserIds.addAll(g.memberIds);
+    }
+    neededUserIds.remove(myId);
+
+    final missingIds = neededUserIds.where((id) => !_users.any((u) => u.id == id)).toList();
+    if (missingIds.isEmpty) return;
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+      for (var i = 0; i < missingIds.length; i += 30) {
+        final chunk = missingIds.sublist(i, min(i + 30, missingIds.length));
+        final snap = await firestore
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: chunk)
+            .get();
+        for (final doc in snap.docs) {
+          final u = User.fromJson(doc.data());
+          final existingIdx = _users.indexWhere((x) => x.id == u.id);
+          if (existingIdx != -1) {
+            _users[existingIdx] = u;
+          } else {
+            _users.add(u);
+          }
+        }
+      }
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error syncing related users: $e');
     }
   }
 
@@ -811,10 +1149,10 @@ class SplitwiseProvider extends ChangeNotifier {
   List<Expense> getExpensesWithFriend(String friendId) {
     final myId = _currentUser?.id ?? '';
     final list = _expenses.where((e) {
+      final isDirectParticipant =
+          e.participantIds.contains(friendId) && e.participantIds.contains(myId);
       final isPayer = e.paidByUserId == friendId || e.paidByUserId == myId;
-      final isParticipant =
-          e.splitShares.containsKey(friendId) && e.splitShares.containsKey(myId);
-      return isPayer && (isParticipant || e.paidByUserId != myId);
+      return isDirectParticipant || (isPayer && e.splitShares.containsKey(friendId));
     }).toList();
     list.sort((a, b) => b.date.compareTo(a.date));
     return list;
@@ -885,6 +1223,7 @@ class SplitwiseProvider extends ChangeNotifier {
     String? notes,
     DateTime? date,
   }) {
+    final participants = <String>{paidByUserId, ...splitShares.keys}.toList();
     final newExpense = Expense(
       id: _uuid.v4(),
       groupId: groupId,
@@ -894,36 +1233,38 @@ class SplitwiseProvider extends ChangeNotifier {
       paidByUserId: paidByUserId,
       category: category,
       splitShares: splitShares,
+      participantIds: participants,
       notes: notes,
     );
 
-    _expenses.add(newExpense);
+    _expenses.insert(0, newExpense);
 
     final payer = getUser(paidByUserId)?.name ?? 'Someone';
     final group = groupId != null ? getGroup(groupId) : null;
     final context = group != null ? 'in "${group.name}"' : '';
 
+    final audienceIds = group != null
+        ? List<String>.from(group.memberIds)
+        : List<String>.from(participants);
+
     final activityItem = ActivityItem(
       id: _uuid.v4(),
+      type: 'expense_added',
       title: '$payer added "$description"',
       subtitle: '$context • $_currency${cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
+      actorId: paidByUserId,
+      actorName: payer,
       expenseId: newExpense.id,
       groupId: groupId,
-      userId: paidByUserId,
+      groupName: group?.name,
+      amount: cost,
+      audienceUserIds: audienceIds,
     );
-    _activities.add(activityItem);
-
-    final recipients = <String>{};
-    if (group != null) {
-      recipients.addAll(group.memberIds);
-    } else {
-      recipients.addAll(splitShares.keys);
-      recipients.add(paidByUserId);
-    }
+    _activities.insert(0, activityItem);
 
     final newNotifs = <AppNotification>[];
-    for (final recipientId in recipients) {
+    for (final recipientId in audienceIds) {
       final recipient = getUser(recipientId);
       if (recipient == null) continue;
       final isActor = recipientId == paidByUserId;
@@ -949,7 +1290,9 @@ class SplitwiseProvider extends ChangeNotifier {
         groupName: group?.name,
         type: 'expense_added',
       );
-      _notifications.add(notif);
+      if (isActor) {
+        _notifications.insert(0, notif);
+      }
       newNotifs.add(notif);
     }
 
@@ -989,31 +1332,36 @@ class SplitwiseProvider extends ChangeNotifier {
       splitShares: {
         toUserId: amount,
       },
+      participantIds: [fromUserId, toUserId],
       isPayment: true,
       notes: 'Settled payment',
     );
 
-    _expenses.add(paymentExpense);
+    _expenses.insert(0, paymentExpense);
+
+    final group = groupId != null ? getGroup(groupId) : null;
+    final audienceIds = group != null
+        ? List<String>.from(group.memberIds)
+        : [fromUserId, toUserId];
 
     final activityItem = ActivityItem(
       id: _uuid.v4(),
+      type: 'payment_settled',
       title: '$fromUser settled with $toUser',
       subtitle: 'Payment of $_currency${amount.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
+      actorId: fromUserId,
+      actorName: fromUser,
       expenseId: paymentExpense.id,
       groupId: groupId,
-      userId: fromUserId,
+      groupName: group?.name,
+      amount: amount,
+      audienceUserIds: audienceIds,
     );
-    _activities.add(activityItem);
-
-    final group = groupId != null ? getGroup(groupId) : null;
-    final recipients = <String>{fromUserId, toUserId};
-    if (group != null) {
-      recipients.addAll(group.memberIds);
-    }
+    _activities.insert(0, activityItem);
 
     final newNotifs = <AppNotification>[];
-    for (final recipientId in recipients) {
+    for (final recipientId in audienceIds) {
       final recipient = getUser(recipientId);
       if (recipient == null) continue;
       final isPayer = recipientId == fromUserId;
@@ -1040,7 +1388,9 @@ class SplitwiseProvider extends ChangeNotifier {
         groupName: group?.name,
         type: 'payment_settled',
       );
-      _notifications.add(notif);
+      if (recipientId == _currentUser?.id) {
+        _notifications.insert(0, notif);
+      }
       newNotifs.add(notif);
     }
 
@@ -1066,13 +1416,16 @@ class SplitwiseProvider extends ChangeNotifier {
 
     final deleteActivity = ActivityItem(
       id: _uuid.v4(),
+      type: 'expense_deleted',
       title: 'Deleted expense "${exp.description}"',
       subtitle: 'Amount: $_currency${exp.cost.toStringAsFixed(2)}',
       timestamp: DateTime.now(),
+      actorId: _currentUser?.id,
+      actorName: _currentUser?.name,
       groupId: exp.groupId,
-      userId: _currentUser?.id,
+      audienceUserIds: exp.participantIds,
     );
-    _activities.add(deleteActivity);
+    _activities.insert(0, deleteActivity);
 
     notifyListeners();
 
@@ -1118,20 +1471,27 @@ class SplitwiseProvider extends ChangeNotifier {
       name: name,
       groupType: groupType,
       memberIds: allMembers,
+      createdByUserId: myId,
       simplifyByDefault: simplifyByDefault,
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
     );
 
     _groups.add(newGroup);
 
     final activityItem = ActivityItem(
       id: _uuid.v4(),
+      type: 'group_created',
       title: 'Created group "${newGroup.name}"',
       subtitle: '${allMembers.length} members',
       timestamp: DateTime.now(),
+      actorId: myId,
+      actorName: _currentUser?.name ?? 'You',
       groupId: newGroup.id,
-      userId: myId,
+      groupName: newGroup.name,
+      audienceUserIds: allMembers,
     );
-    _activities.add(activityItem);
+    _activities.insert(0, activityItem);
 
     final newNotifs = <AppNotification>[];
     for (final memberId in allMembers) {
@@ -1153,7 +1513,9 @@ class SplitwiseProvider extends ChangeNotifier {
         groupName: newGroup.name,
         type: 'group_created',
       );
-      _notifications.add(notif);
+      if (isCreator) {
+        _notifications.insert(0, notif);
+      }
       newNotifs.add(notif);
     }
 
@@ -1196,6 +1558,7 @@ class SplitwiseProvider extends ChangeNotifier {
       } else {
         batch.update(firestore.collection('groups').doc(groupId), {
           'memberIds': updatedMembers,
+          'updatedAt': DateTime.now().toIso8601String(),
         });
         final idx = _groups.indexWhere((g) => g.id == groupId);
         if (idx != -1) {
@@ -1205,14 +1568,18 @@ class SplitwiseProvider extends ChangeNotifier {
 
       final act = ActivityItem(
         id: _uuid.v4(),
+        type: 'member_left',
         title: '$userName left group "${group.name}"',
         subtitle: '${updatedMembers.length} members remaining',
         timestamp: DateTime.now(),
+        actorId: userId,
+        actorName: userName,
         groupId: group.id,
-        userId: userId,
+        groupName: group.name,
+        audienceUserIds: group.memberIds,
       );
       batch.set(firestore.collection('activities').doc(act.id), act.toJson());
-      _activities.add(act);
+      _activities.insert(0, act);
 
       for (final remId in updatedMembers) {
         final remUser = getUser(remId);
@@ -1230,7 +1597,9 @@ class SplitwiseProvider extends ChangeNotifier {
           type: 'member_left',
         );
         batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
-        _notifications.add(notif);
+        if (remId == _currentUser?.id) {
+          _notifications.insert(0, notif);
+        }
       }
 
       await batch.commit();
@@ -1277,14 +1646,7 @@ class SplitwiseProvider extends ChangeNotifier {
   List<Expense> searchExpenses(String query) {
     if (query.trim().isEmpty) return [];
     final q = query.trim().toLowerCase();
-    final myId = _currentUser?.id ?? '';
-    final myGroupIds = groups.map((g) => g.id).toSet();
     return _expenses.where((e) {
-      final isRelevant = e.paidByUserId == myId ||
-          e.splitShares.containsKey(myId) ||
-          myGroupIds.contains(e.groupId);
-      if (!isRelevant) return false;
-
       final payer = getUser(e.paidByUserId)?.name ?? '';
       return e.description.toLowerCase().contains(q) ||
           e.category.toLowerCase().contains(q) ||
@@ -1359,44 +1721,260 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
-  void addFriend({required String name, required String email}) {
-    final newFriend = User(
-      id: _uuid.v4(),
-      name: name,
-      email: email.trim().toLowerCase(),
-      createdAt: DateTime.now(),
-    );
-    _users.add(newFriend);
+  /// Search all registered users (excluding self and already-friends) by name/email.
+  List<User> searchRegisteredUsers(String query) {
+    final myId = _currentUser?.id ?? '';
+    final myFriendIds = _currentUser?.friendIds ?? const [];
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return [];
+    return _users.where((u) {
+      return u.id != myId &&
+          !myFriendIds.contains(u.id) &&
+          (u.name.toLowerCase().contains(q) || u.email.toLowerCase().contains(q));
+    }).toList();
+  }
+
+  /// Add a friend by email or phone — links to an existing registered user if found,
+  /// otherwise creates an invite placeholder. Never auto-creates ghost duplicates.
+  Future<String?> addFriend({
+    required String name,
+    required String email,
+    String? phoneNumber,
+  }) async {
+    if (_currentUser == null) return 'Not logged in.';
+    final cleanInput = email.trim();
+    final isEmail = cleanInput.contains('@');
+    final cleanEmail = isEmail ? cleanInput.toLowerCase() : '';
+    final cleanPhone = phoneNumber?.trim() ??
+        (!isEmail ? cleanInput.replaceAll(RegExp(r'[\s\-().]'), '') : '');
+    final myId = _currentUser!.id;
+    final myFriendIds = List<String>.from(_currentUser!.friendIds);
+
+    // Prevent adding yourself
+    if (cleanEmail.isNotEmpty && cleanEmail == _currentUser!.email.toLowerCase()) {
+      return 'You cannot add yourself as a friend.';
+    }
+    final myPhoneClean = _currentUser!.phoneNumber?.replaceAll(RegExp(r'[\s\-().]'), '') ?? '';
+    if (cleanPhone.isNotEmpty && cleanPhone == myPhoneClean) {
+      return 'You cannot add yourself as a friend.';
+    }
+
+    try {
+      final firestore = FirebaseFirestore.instance;
+
+      // Check if this email or phone belongs to a registered user
+      User? targetUser = _users.where((u) {
+        if (cleanEmail.isNotEmpty && u.email.toLowerCase() == cleanEmail) {
+          return true;
+        }
+        if (cleanPhone.isNotEmpty) {
+          final uPhone = u.phoneNumber?.replaceAll(RegExp(r'[\s\-().]'), '') ?? '';
+          if (uPhone.isNotEmpty && uPhone == cleanPhone) return true;
+        }
+        return false;
+      }).firstOrNull;
+
+      if (targetUser == null) {
+        // Try Firestore lookup by email
+        if (cleanEmail.isNotEmpty) {
+          final snap = await firestore
+              .collection('users')
+              .where('email', isEqualTo: cleanEmail)
+              .limit(1)
+              .get();
+          if (snap.docs.isNotEmpty) {
+            targetUser = User.fromJson(snap.docs.first.data());
+          }
+        }
+        // Try Firestore lookup by phone
+        if (targetUser == null && cleanPhone.isNotEmpty) {
+          final phoneSnap = await firestore
+              .collection('users')
+              .where('phoneNumber', isEqualTo: cleanPhone)
+              .limit(1)
+              .get();
+          if (phoneSnap.docs.isNotEmpty) {
+            targetUser = User.fromJson(phoneSnap.docs.first.data());
+          }
+        }
+        if (targetUser != null && !_users.any((u) => u.id == targetUser!.id)) {
+          _users.add(targetUser);
+        }
+      }
+
+      if (targetUser == null) {
+        // User not registered: create an invite placeholder
+        final placeholder = User(
+          id: _uuid.v4(),
+          name: name.trim().isNotEmpty
+              ? name.trim()
+              : (cleanEmail.isNotEmpty
+                  ? cleanEmail.split('@').first
+                  : (cleanPhone.isNotEmpty ? cleanPhone : 'Friend')),
+          email: cleanEmail.isNotEmpty ? cleanEmail : '$cleanPhone@splitit.app',
+          phoneNumber: cleanPhone.isNotEmpty ? cleanPhone : null,
+          createdAt: DateTime.now(),
+          isEmailVerified: false,
+          isPhoneVerified: false,
+        );
+        await firestore
+            .collection('users')
+            .doc(placeholder.id)
+            .set(placeholder.toJson());
+        _users.add(placeholder);
+        targetUser = placeholder;
+      }
+
+      // Already a friend?
+      if (myFriendIds.contains(targetUser.id)) {
+        return 'You are already friends with ${targetUser.name}.';
+      }
+
+      // Add friend to currentUser's friendIds and targetUser's friendIds (bidirectional sync)
+      myFriendIds.add(targetUser.id);
+      _currentUser = _currentUser!.copyWith(friendIds: myFriendIds);
+      final myIdx = _users.indexWhere((u) => u.id == myId);
+      if (myIdx != -1) _users[myIdx] = _currentUser!;
+
+      final targetFriendIds = List<String>.from(targetUser.friendIds);
+      if (!targetFriendIds.contains(myId)) {
+        targetFriendIds.add(myId);
+        targetUser = targetUser.copyWith(friendIds: targetFriendIds);
+        final tIdx = _users.indexWhere((u) => u.id == targetUser!.id);
+        if (tIdx != -1) _users[tIdx] = targetUser;
+      }
+
+      final activityItem = ActivityItem(
+        id: _uuid.v4(),
+        type: 'friend_added',
+        title: 'Connected with "${targetUser.name}"',
+        subtitle: targetUser.email,
+        timestamp: DateTime.now(),
+        actorId: myId,
+        actorName: _currentUser?.name,
+        audienceUserIds: [myId, targetUser.id],
+      );
+      _activities.insert(0, activityItem);
+
+      // Notification for target user
+      final notif = AppNotification(
+        id: _uuid.v4(),
+        recipientUserId: targetUser.id,
+        recipientName: targetUser.name,
+        recipientEmail: targetUser.email,
+        title: '${_currentUser!.name} added you as a friend',
+        body: 'You are now connected on SplitIt.',
+        timestamp: DateTime.now(),
+        type: 'friend_added',
+      );
+
+      notifyListeners();
+
+      final batch = firestore.batch();
+      batch.update(firestore.collection('users').doc(myId), {
+        'friendIds': myFriendIds,
+      });
+      batch.update(firestore.collection('users').doc(targetUser.id), {
+        'friendIds': targetFriendIds,
+      });
+      batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
+      batch.set(firestore.collection('notifications').doc(notif.id), notif.toJson());
+      await batch.commit();
+      return null;
+    } catch (e) {
+      debugPrint('addFriend exception: $e');
+      return 'Failed to add friend: $e';
+    }
+  }
+
+  /// Add an existing registered user to an existing group.
+  Future<String?> addMemberToGroup({
+    required String groupId,
+    required String userId,
+  }) async {
+    final group = getGroup(groupId);
+    if (group == null) return 'Group not found.';
+
+    final user = getUser(userId);
+    if (user == null) return 'User not found.';
+
+    if (group.memberIds.contains(userId)) {
+      return '${user.name} is already a member of this group.';
+    }
+
+    final updatedMembers = [...group.memberIds, userId];
+    final idx = _groups.indexWhere((g) => g.id == groupId);
+    if (idx != -1) {
+      _groups[idx] = group.copyWith(memberIds: updatedMembers);
+    }
 
     final activityItem = ActivityItem(
       id: _uuid.v4(),
-      title: 'Added friend "$name"',
-      subtitle: email,
+      type: 'member_added',
+      title: '${user.name} added to "${group.name}"',
+      subtitle: 'Added by ${_currentUser?.name ?? "someone"}',
       timestamp: DateTime.now(),
-      userId: _currentUser?.id,
+      actorId: _currentUser?.id,
+      actorName: _currentUser?.name,
+      groupId: groupId,
+      groupName: group.name,
+      audienceUserIds: updatedMembers,
     );
-    _activities.add(activityItem);
+    _activities.insert(0, activityItem);
+
+    // Notify the added member
+    final addedNotif = AppNotification(
+      id: _uuid.v4(),
+      recipientUserId: user.id,
+      recipientName: user.name,
+      recipientEmail: user.email,
+      title: 'You were added to "${group.name}"',
+      body: '${_currentUser?.name ?? "Someone"} added you to the group "${group.name}".',
+      timestamp: DateTime.now(),
+      groupId: groupId,
+      groupName: group.name,
+      type: 'member_added',
+    );
+    if (user.id == _currentUser?.id) {
+      _notifications.insert(0, addedNotif);
+    }
 
     notifyListeners();
 
     try {
       final firestore = FirebaseFirestore.instance;
       final batch = firestore.batch();
-      batch.set(firestore.collection('users').doc(newFriend.id), newFriend.toJson());
+      batch.update(firestore.collection('groups').doc(groupId), {
+        'memberIds': updatedMembers,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
       batch.set(firestore.collection('activities').doc(activityItem.id), activityItem.toJson());
-      batch.commit().catchError((e) => debugPrint('Firestore addFriend error: $e'));
+      batch.set(firestore.collection('notifications').doc(addedNotif.id), addedNotif.toJson());
+      await batch.commit();
+      return null;
     } catch (e) {
-      debugPrint('Firestore addFriend exception: $e');
+      debugPrint('addMemberToGroup error: $e');
+      return 'Failed to add member: $e';
     }
   }
 
   @override
   void dispose() {
-    _usersSub?.cancel();
-    _groupsSub?.cancel();
-    _expensesSub?.cancel();
-    _activitiesSub?.cancel();
-    _notificationsSub?.cancel();
+    _cancelUserStreams();
     super.dispose();
   }
+}
+
+class ContactFriendResult {
+  final bool permissionDenied;
+  final List<User> friends;
+  final int contactsCount;
+  final String? error;
+
+  ContactFriendResult({
+    required this.permissionDenied,
+    required this.friends,
+    required this.contactsCount,
+    this.error,
+  });
 }

@@ -16,6 +16,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
+  final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
 
@@ -28,6 +29,7 @@ class _AuthScreenState extends State<AuthScreen> {
   void dispose() {
     _nameController.dispose();
     _emailController.dispose();
+    _phoneController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     super.dispose();
@@ -63,10 +65,12 @@ class _AuthScreenState extends State<AuthScreen> {
         return;
       }
 
+      final phone = _phoneController.text.trim();
       final error = await provider.register(
         name: name,
         email: email,
         password: password,
+        phoneNumber: phone.isNotEmpty ? phone : null,
       );
 
       if (mounted) {
@@ -317,16 +321,32 @@ class _AuthScreenState extends State<AuthScreen> {
                         // Email
                         TextField(
                           controller: _emailController,
-                          keyboardType: TextInputType.emailAddress,
+                          keyboardType: _isSignUp ? TextInputType.emailAddress : TextInputType.text,
                           autocorrect: false,
                           decoration: InputDecoration(
-                            labelText: 'Email Address',
-                            prefixIcon: const Icon(Icons.email_outlined, size: 20),
+                            labelText: _isSignUp ? 'Email Address *' : 'Email or Phone Number',
+                            prefixIcon: Icon(_isSignUp ? Icons.email_outlined : Icons.account_circle_outlined, size: 20),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                           ),
                         ),
                         const SizedBox(height: 14),
+
+                        // Phone Number (if sign up)
+                        if (_isSignUp) ...[
+                          TextField(
+                            controller: _phoneController,
+                            keyboardType: TextInputType.phone,
+                            decoration: InputDecoration(
+                              labelText: 'Phone Number (for SMS OTP)',
+                              prefixIcon: const Icon(Icons.phone_outlined, size: 20),
+                              hintText: 'e.g. +1 555-123-4567',
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                        ],
 
                         // Password
                         TextField(

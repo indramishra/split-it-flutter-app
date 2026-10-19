@@ -82,4 +82,48 @@ void main() {
     expect(updated.password, 'newSecretPass');
     expect(updated.resetPasswordCode, '654321');
   });
+
+  test('User model defaults isEmailVerified to false when missing in JSON', () {
+    final minimalJson = {
+      'id': 'u456',
+      'name': 'Friend Test',
+      'email': 'friend@example.com',
+    };
+
+    final user = User.fromJson(minimalJson);
+    // Verified that default is false so user is NOT allowed to bypass verification
+    expect(user.isEmailVerified, isFalse);
+    expect(user.isPhoneVerified, isFalse);
+  });
+
+  test('User model handles phoneNumber and phone verification serialization', () {
+    final now = DateTime.now();
+    final user = User(
+      id: 'u789',
+      name: 'Phone User',
+      email: 'phoneuser@example.com',
+      phoneNumber: '+15551234567',
+      isPhoneVerified: false,
+      phoneVerificationCode: '987654',
+      phoneVerificationCodeSentAt: now,
+    );
+
+    final json = user.toJson();
+    expect(json['phoneNumber'], '+15551234567');
+    expect(json['isPhoneVerified'], isFalse);
+    expect(json['phoneVerificationCode'], '987654');
+    expect(json['phoneVerificationCodeSentAt'], now.toIso8601String());
+
+    final parsed = User.fromJson(json);
+    expect(parsed.phoneNumber, '+15551234567');
+    expect(parsed.isPhoneVerified, isFalse);
+    expect(parsed.phoneVerificationCode, '987654');
+
+    final verifiedUser = parsed.copyWith(
+      isPhoneVerified: true,
+      clearPhoneVerificationCode: true,
+    );
+    expect(verifiedUser.isPhoneVerified, isTrue);
+    expect(verifiedUser.phoneVerificationCode, isNull);
+  });
 }

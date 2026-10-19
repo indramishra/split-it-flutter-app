@@ -8,6 +8,7 @@ import '../providers/splitwise_provider.dart';
 import '../theme/app_theme.dart';
 import 'group_detail_screen.dart';
 import 'friend_detail_screen.dart';
+import 'contact_friends_screen.dart';
 
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
@@ -134,6 +135,24 @@ class _SearchScreenState extends State<SearchScreen> {
             'Find any group, friend, or past expense by name or amount',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 18),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: AppTheme.tealDark,
+              side: const BorderSide(color: AppTheme.teal),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            icon: const Icon(Icons.contacts, size: 16),
+            label: const Text('Find Friends from Contacts'),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ContactFriendsScreen()),
+              );
+            },
           ),
         ],
       ),

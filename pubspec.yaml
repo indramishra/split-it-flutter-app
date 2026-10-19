@@ -41,6 +41,9 @@ dependencies:
   cloud_firestore: ^7.0.0
   shared_preferences: ^2.5.6
   flutter_local_notifications: ^22.3.2
+  # Contact list access to find friends who have the app
+  flutter_contacts: ^1.1.9+2
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

@@ -10,6 +10,7 @@ import 'add_expense_screen.dart';
 import 'group_detail_screen.dart';
 import 'friend_detail_screen.dart';
 import 'search_screen.dart';
+import 'contact_friends_screen.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -277,6 +278,52 @@ class _MainScreenState extends State<MainScreen> {
                 onPressed: () => _showAddFriendDialog(context, provider),
               ),
             ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          child: InkWell(
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const ContactFriendsScreen()),
+              );
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppTheme.tealLight,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.teal.withValues(alpha: 0.2)),
+              ),
+              child: const Row(
+                children: [
+                  Icon(Icons.contacts, color: AppTheme.tealDark, size: 20),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Find Friends from Contacts',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.tealDark,
+                          ),
+                        ),
+                        Text(
+                          'See who in your phone contacts has a SplitIt account',
+                          style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, color: AppTheme.tealDark, size: 18),
+                ],
+              ),
+            ),
           ),
         ),
         if (provider.friends.isEmpty)
@@ -822,42 +869,115 @@ class _MainScreenState extends State<MainScreen> {
   void _showAddFriendDialog(BuildContext context, SplitwiseProvider provider) {
     final nameCtrl = TextEditingController();
     final emailCtrl = TextEditingController();
+    String? errorMsg;
+    bool isLoading = false;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Add a Friend'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'Friend Name'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Add a Friend'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter their email or phone to find a registered user, or invite them.',
+                style: TextStyle(fontSize: 12, color: AppTheme.textMuted),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: 'Name (optional)'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Email or Phone Number *',
+                  hintText: 'user@example.com or phone',
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.tealDark,
+                    side: const BorderSide(color: AppTheme.teal),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                  ),
+                  icon: const Icon(Icons.contacts_outlined, size: 16),
+                  label: const Text('Find from Device Contacts', style: TextStyle(fontSize: 12)),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ContactFriendsScreen()),
+                    );
+                  },
+                ),
+              ),
+              if (errorMsg != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  errorMsg!,
+                  style: const TextStyle(color: Colors.red, fontSize: 12),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: emailCtrl,
-              decoration: const InputDecoration(labelText: 'Email Address'),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: AppTheme.teal, foregroundColor: Colors.white),
+              onPressed: isLoading
+                  ? null
+                  : () async {
+                      final input = emailCtrl.text.trim();
+                      if (input.isEmpty) {
+                        setDialogState(() => errorMsg = 'Please enter an email address or phone number.');
+                        return;
+                      }
+                      setDialogState(() {
+                        isLoading = true;
+                        errorMsg = null;
+                      });
+                      final err = await provider.addFriend(
+                        name: nameCtrl.text.trim(),
+                        email: input,
+                      );
+                      if (ctx.mounted) {
+                        if (err != null) {
+                          setDialogState(() {
+                            isLoading = false;
+                            errorMsg = err;
+                          });
+                        } else {
+                          Navigator.pop(ctx);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Friend added successfully!'),
+                                backgroundColor: AppTheme.teal,
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    },
+              child: isLoading
+                  ? const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Add Friend'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.teal, foregroundColor: Colors.white),
-            onPressed: () {
-              final name = nameCtrl.text.trim();
-              final email = emailCtrl.text.trim();
-              if (name.isEmpty) return;
-              provider.addFriend(name: name, email: email.isEmpty ? '$name@example.com' : email);
-              Navigator.pop(ctx);
-            },
-            child: const Text('Add'),
-          ),
-        ],
       ),
     );
   }

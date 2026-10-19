@@ -2,7 +2,33 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
+    
+    // SplitIt Reimagined Data Schema & Segregation
+    // The application manages phone/email registration and OTP verification
+    // directly with Firestore data models.
+
+    // 1. Users Collection: Public profiles, contact hashes, and friendIds
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // 2. Groups Collection: Groups scoped by memberIds array
+    match /groups/{groupId} {
+      allow read, write: if true;
+    }
+
+    // 3. Expenses Collection: Scoped by participantIds array
+    match /expenses/{expenseId} {
+      allow read, write: if true;
+    }
+
+    // 4. Activities Collection: Scoped audience feed items targeted by audienceUserIds array
+    match /activities/{activityId} {
+      allow read, write: if true;
+    }
+
+    // 5. Notifications Collection: Targeted direct alerts addressed to recipientUserId
+    match /notifications/{notificationId} {
       allow read, write: if true;
     }
   }

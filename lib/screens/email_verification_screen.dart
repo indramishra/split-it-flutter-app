@@ -18,6 +18,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       List.generate(6, (_) => TextEditingController());
   final List<FocusNode> _focusNodes = List.generate(6, (_) => FocusNode());
 
+  bool _isPhoneMode = false;
   bool _isLoading = false;
   bool _isResending = false;
   String? _errorMessage;
@@ -28,11 +29,15 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   void initState() {
     super.initState();
     _startCooldownTimer();
-    // Pre-fill if verification code is already assigned on user for test ease
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final user = context.read<SplitwiseProvider>().currentUser;
-      if (user.verificationCode != null && user.verificationCode!.length == 6) {
-        // We will keep digit controllers ready or let user see notification
+      // If email is already verified and phone is not, auto switch to phone mode
+      if (user.isEmailVerified &&
+          user.phoneNumber != null &&
+          user.phoneNumber!.isNotEmpty &&
+          !user.isPhoneVerified) {
+        setState(() => _isPhoneMode = true);
       }
     });
   }
@@ -60,6 +65,14 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       f.dispose();
     }
     super.dispose();
+  }
+
+  void _clearDigits() {
+    for (final c in _digitControllers) {
+      c.clear();
+    }
+    _focusNodes.first.requestFocus();
+    setState(() => _errorMessage = null);
   }
 
   String get _enteredCode =>
@@ -109,26 +122,44 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     });
 
     final provider = context.read<SplitwiseProvider>();
-    final error = await provider.verifyEmail(code);
+    final String? error;
+
+    if (_isPhoneMode) {
+      error = await provider.verifyPhone(code);
+    } else {
+      error = await provider.verifyEmail(code);
+    }
 
     if (mounted) {
       setState(() {
         _isLoading = false;
         _errorMessage = error;
       });
+
       if (error == null) {
+        final verifiedLabel = _isPhoneMode ? 'Phone number' : 'Email';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             backgroundColor: AppTheme.tealDark,
             content: Row(
               children: [
-                Icon(Icons.check_circle, color: Colors.white),
-                SizedBox(width: 8),
-                Text('Email verified successfully! Welcome to SplitIt.'),
+                const Icon(Icons.check_circle, color: Colors.white),
+                const SizedBox(width: 8),
+                Text('$verifiedLabel verified successfully!'),
               ],
             ),
           ),
         );
+
+        // If email was verified and phone still needs verification, switch mode
+        final user = provider.currentUser;
+        if (!_isPhoneMode &&
+            user.phoneNumber != null &&
+            user.phoneNumber!.isNotEmpty &&
+            !user.isPhoneVerified) {
+          _clearDigits();
+          setState(() => _isPhoneMode = true);
+        }
       }
     }
   }
@@ -142,7 +173,13 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     });
 
     final provider = context.read<SplitwiseProvider>();
-    final error = await provider.sendEmailVerificationCode();
+    final String? error;
+
+    if (_isPhoneMode) {
+      error = await provider.sendPhoneVerificationCode();
+    } else {
+      error = await provider.sendEmailVerificationCode();
+    }
 
     if (mounted) {
       setState(() => _isResending = false);
@@ -150,11 +187,12 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
         setState(() => _errorMessage = error);
       } else {
         _startCooldownTimer();
+        final methodLabel = _isPhoneMode ? 'SMS' : 'email';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             backgroundColor: AppTheme.teal,
             content: Text(
-              'A new verification code was sent to your email & phone notification!',
+              'A new verification code was sent via $methodLabel notification!',
             ),
           ),
         );
@@ -175,12 +213,17 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   Widget build(BuildContext context) {
     final provider = context.watch<SplitwiseProvider>();
     final user = provider.currentUser;
-    final currentCode = user.verificationCode;
+
+    final hasPhone = user.phoneNumber != null && user.phoneNumber!.isNotEmpty;
+    final currentCode =
+        _isPhoneMode ? user.phoneVerificationCode : user.verificationCode;
+    final currentTarget =
+        _isPhoneMode ? (user.phoneNumber ?? '') : user.email;
 
     return Scaffold(
       backgroundColor: AppTheme.background,
       appBar: AppBar(
-        title: const Text('Verify Email'),
+        title: Text(_isPhoneMode ? 'Verify Phone' : 'Verify Email'),
         centerTitle: true,
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -201,6 +244,138 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  // Tab Switcher if phone number is present
+                  if (hasPhone) ...[
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.all(4),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                if (_isPhoneMode) {
+                                  _clearDigits();
+                                  setState(() => _isPhoneMode = false);
+                                }
+                              },
+                              child: Container(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: !_isPhoneMode
+                                      ? Colors.white
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(10),
+                                  boxShadow: !_isPhoneMode
+                                      ? [
+                                          BoxShadow(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.05),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 2),
+                                          ),
+                                        ]
+                                      : null,
+                                ),
+                                child: Center(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        user.isEmailVerified
+                                            ? Icons.check_circle
+                                            : Icons.email_outlined,
+                                        size: 16,
+                                        color: user.isEmailVerified
+                                            ? Colors.green
+                                            : AppTheme.tealDark,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Email ${user.isEmailVerified ? "✓" : ""}',
+                                        style: TextStyle(
+                                          fontWeight: !_isPhoneMode
+                                              ? FontWeight.w700
+                                              : FontWeight.w500,
+                                          color: !_isPhoneMode
+                                              ? AppTheme.tealDark
+                                              : AppTheme.textMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () {
+                                if (!_isPhoneMode) {
+                                  _clearDigits();
+                                  setState(() => _isPhoneMode = true);
+                                }
+                              },
+                              child: Container(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: _isPhoneMode
+                                      ? Colors.white
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(10),
+                                  boxShadow: _isPhoneMode
+                                      ? [
+                                          BoxShadow(
+                                            color: Colors.black
+                                                .withValues(alpha: 0.05),
+                                            blurRadius: 4,
+                                            offset: const Offset(0, 2),
+                                          ),
+                                        ]
+                                      : null,
+                                ),
+                                child: Center(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        user.isPhoneVerified
+                                            ? Icons.check_circle
+                                            : Icons.sms_outlined,
+                                        size: 16,
+                                        color: user.isPhoneVerified
+                                            ? Colors.green
+                                            : AppTheme.tealDark,
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        'Phone SMS ${user.isPhoneVerified ? "✓" : ""}',
+                                        style: TextStyle(
+                                          fontWeight: _isPhoneMode
+                                              ? FontWeight.w700
+                                              : FontWeight.w500,
+                                          color: _isPhoneMode
+                                              ? AppTheme.tealDark
+                                              : AppTheme.textMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+
                   // Icon Header
                   Container(
                     padding: const EdgeInsets.all(20),
@@ -208,17 +383,21 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                       color: AppTheme.tealLight,
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(
-                      Icons.mark_email_unread_outlined,
+                    child: Icon(
+                      _isPhoneMode
+                          ? Icons.sms_outlined
+                          : Icons.mark_email_unread_outlined,
                       size: 54,
                       color: AppTheme.tealDark,
                     ),
                   ),
                   const SizedBox(height: 20),
 
-                  const Text(
-                    'Verify your email',
-                    style: TextStyle(
+                  Text(
+                    _isPhoneMode
+                        ? 'Verify your phone number'
+                        : 'Verify your email',
+                    style: const TextStyle(
                       fontSize: 26,
                       fontWeight: FontWeight.w800,
                       color: AppTheme.charcoal,
@@ -228,13 +407,15 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                   const SizedBox(height: 8),
 
                   Text(
-                    'We sent a 6-digit confirmation code to:',
+                    _isPhoneMode
+                        ? 'We sent a 6-digit SMS code to:'
+                        : 'We sent a 6-digit confirmation code to:',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    user.email,
+                    currentTarget,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
                       fontSize: 16,
@@ -244,7 +425,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                   ),
                   const SizedBox(height: 20),
 
-                  // Phone Notification Banner Card
+                  // Notification Banner Card
                   Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
@@ -268,8 +449,10 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                             color: AppTheme.tealLight,
                             borderRadius: BorderRadius.circular(10),
                           ),
-                          child: const Icon(
-                            Icons.phone_android,
+                          child: Icon(
+                            _isPhoneMode
+                                ? Icons.phone_android
+                                : Icons.mark_chat_unread_outlined,
                             color: AppTheme.tealDark,
                             size: 22,
                           ),
@@ -279,9 +462,11 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Phone Notification Dispatched',
-                                style: TextStyle(
+                              Text(
+                                _isPhoneMode
+                                    ? 'SMS Notification Dispatched'
+                                    : 'Phone Notification Dispatched',
+                                style: const TextStyle(
                                   fontWeight: FontWeight.w700,
                                   fontSize: 13,
                                   color: AppTheme.charcoal,
@@ -289,14 +474,17 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Check your phone notifications or swipe down your notification tray for the 6-digit code.',
+                                _isPhoneMode
+                                    ? 'Check your phone notifications tray or SMS messages for the 6-digit code.'
+                                    : 'Check your phone notifications or swipe down your notification tray for the 6-digit code.',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: Colors.grey.shade600,
                                   height: 1.3,
                                 ),
                               ),
-                              if (currentCode != null && currentCode.isNotEmpty) ...[
+                              if (currentCode != null &&
+                                  currentCode.isNotEmpty) ...[
                                 const SizedBox(height: 8),
                                 InkWell(
                                   onTap: () =>
@@ -452,9 +640,9 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                                 color: Colors.white,
                               ),
                             )
-                          : const Text(
-                              'Verify Email',
-                              style: TextStyle(
+                          : Text(
+                              _isPhoneMode ? 'Verify Phone' : 'Verify Email',
+                              style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w700,
                               ),
@@ -502,7 +690,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                     icon: const Icon(Icons.notifications_active_outlined,
                         size: 16),
                     label: const Text(
-                      'Re-request phone notification permissions',
+                      'Re-request notification permissions',
                       style: TextStyle(fontSize: 12),
                     ),
                     onPressed: () async {
@@ -513,7 +701,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                           SnackBar(
                             content: Text(
                               granted
-                                  ? 'Phone notification permission granted!'
+                                  ? 'Notification permission granted!'
                                   : 'Notification permission denied or restricted in device settings.',
                             ),
                           ),

@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
 import '../models/group.dart';
+import '../models/user.dart';
 import '../theme/app_theme.dart';
 import '../widgets/settle_up_sheet.dart';
 import '../widgets/notification_drawer.dart';
@@ -484,60 +485,184 @@ class _GroupDetailScreenState extends State<GroupDetailScreen>
     final provider = context.read<SplitwiseProvider>();
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('${group.name} Members'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView(
-            shrinkWrap: true,
-            children: group.memberIds.map((id) {
-              final user = provider.getUser(id);
-              final isMe = id == provider.currentUser.id;
-              final initial = user?.name.isNotEmpty == true ? user!.name[0].toUpperCase() : '?';
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('${group.name} Members'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: group.memberIds.map((id) {
+                final user = provider.getUser(id);
+                final isMe = id == provider.currentUser.id;
+                final initial = user?.name.isNotEmpty == true ? user!.name[0].toUpperCase() : '?';
 
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundColor: isMe ? AppTheme.tealLight : Colors.grey.shade200,
-                  foregroundColor: isMe ? AppTheme.tealDark : AppTheme.charcoal,
-                  child: Text(initial),
-                ),
-                title: Text(user?.name ?? id),
-                subtitle: Text(user?.email ?? ''),
-                trailing: isMe
-                    ? const Chip(
-                        label: Text('You', style: TextStyle(fontSize: 11)),
-                        backgroundColor: AppTheme.tealLight,
-                      )
-                    : IconButton(
-                        icon: const Icon(Icons.person_remove_outlined, color: Colors.red, size: 20),
-                        tooltip: 'Remove from group',
-                        onPressed: () {
-                          Navigator.pop(ctx);
-                          _confirmRemoveMember(context, group, id, user?.name ?? 'Member');
-                        },
-                      ),
-              );
-            }).toList(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.negativeOrange,
-              foregroundColor: Colors.white,
+                return ListTile(
+                  leading: CircleAvatar(
+                    backgroundColor: isMe ? AppTheme.tealLight : Colors.grey.shade200,
+                    foregroundColor: isMe ? AppTheme.tealDark : AppTheme.charcoal,
+                    child: Text(initial),
+                  ),
+                  title: Text(user?.name ?? id),
+                  subtitle: Text(user?.email ?? ''),
+                  trailing: isMe
+                      ? const Chip(
+                          label: Text('You', style: TextStyle(fontSize: 11)),
+                          backgroundColor: AppTheme.tealLight,
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.person_remove_outlined, color: Colors.red, size: 20),
+                          tooltip: 'Remove from group',
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            _confirmRemoveMember(context, group, id, user?.name ?? 'Member');
+                          },
+                        ),
+                );
+              }).toList(),
             ),
-            icon: const Icon(Icons.exit_to_app, size: 16),
-            label: const Text('Leave Group'),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _showExitGroupDialog(context, group);
-            },
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Close'),
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.person_add_alt_1, size: 16),
+              label: const Text('Add Member'),
+              style: TextButton.styleFrom(foregroundColor: AppTheme.teal),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _showAddMemberToGroupDialog(context, group);
+              },
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.negativeOrange,
+                foregroundColor: Colors.white,
+              ),
+              icon: const Icon(Icons.exit_to_app, size: 16),
+              label: const Text('Leave Group'),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _showExitGroupDialog(context, group);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAddMemberToGroupDialog(BuildContext context, Group group) {
+    final provider = context.read<SplitwiseProvider>();
+    final searchCtrl = TextEditingController();
+    String query = '';
+
+    // Friends not already in the group
+    List<User> candidates() {
+      final q = query.trim().toLowerCase();
+      final myId = provider.currentUser.id;
+      final pool = provider.friends.isNotEmpty ? provider.friends : provider.users;
+      return pool.where((u) {
+        return u.id != myId &&
+            !group.memberIds.contains(u.id) &&
+            (q.isEmpty ||
+                u.name.toLowerCase().contains(q) ||
+                u.email.toLowerCase().contains(q));
+      }).toList();
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              const Icon(Icons.person_add_alt_1, color: AppTheme.teal),
+              const SizedBox(width: 8),
+              Expanded(child: Text('Add to "${group.name}"')),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: searchCtrl,
+                  decoration: const InputDecoration(
+                    hintText: 'Search by name or email…',
+                    prefixIcon: Icon(Icons.search),
+                    isDense: true,
+                  ),
+                  onChanged: (val) => setDialogState(() => query = val),
+                ),
+                const SizedBox(height: 8),
+                if (candidates().isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      provider.friends.isEmpty
+                          ? 'No friends available to add.\nAdd friends first from the Friends tab or Contacts!'
+                          : 'No matching friends. All your friends may already be in this group.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+                    ),
+                  )
+                else
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 280),
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: candidates().map((u) {
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.grey.shade200,
+                            foregroundColor: AppTheme.charcoal,
+                            child: Text(u.name.isNotEmpty ? u.name[0].toUpperCase() : '?'),
+                          ),
+                          title: Text(u.name),
+                          subtitle: Text(u.email, style: const TextStyle(fontSize: 12)),
+                          trailing: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.teal,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              final err = await provider.addMemberToGroup(
+                                groupId: group.id,
+                                userId: u.id,
+                              );
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(err ?? '${u.name} added to "${group.name}"!'),
+                                    backgroundColor: err != null ? Colors.red : AppTheme.teal,
+                                  ),
+                                );
+                              }
+                            },
+                            child: const Text('Add', style: TextStyle(fontSize: 12)),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
       ),
     );
   }
