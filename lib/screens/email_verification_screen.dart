@@ -13,7 +13,8 @@ class EmailVerificationScreen extends StatefulWidget {
       _EmailVerificationScreenState();
 }
 
-class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
+class _EmailVerificationScreenState extends State<EmailVerificationScreen>
+    with WidgetsBindingObserver {
   bool _isPhoneMode = false;
   bool _isLoading = false;
   bool _isResending = false;
@@ -25,6 +26,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _startCooldownTimer();
     _startPollingForVerification();
 
@@ -40,32 +42,74 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _timer?.cancel();
+    _pollingTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_isPhoneMode) {
+      // User just returned to the app (e.g. from their email client or browser)
+      _checkVerificationStatus();
+    }
+  }
+
+  Future<void> _checkVerificationStatus() async {
+    if (!mounted) return;
+    final provider = context.read<SplitwiseProvider>();
+    final isVerified = await provider.checkEmailVerified();
+    if (isVerified && mounted && !_isPhoneMode) {
+      _pollingTimer?.cancel();
+      _timer?.cancel();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle_outline, color: Colors.white, size: 20),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Email verified successfully! Welcome to SplitIt.',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: AppTheme.teal,
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(seconds: 3),
+        ),
+      );
+
+      final user = provider.currentUser;
+      if (user.phoneNumber != null &&
+          user.phoneNumber!.isNotEmpty &&
+          !user.isPhoneVerified) {
+        _clearDigits();
+        setState(() => _isPhoneMode = true);
+      } else {
+        // If screen was pushed onto a navigator, pop.
+        // Otherwise SplitItRoot in main.dart automatically transitions to MainScreen!
+        if (Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+      }
+    }
+  }
+
   void _startPollingForVerification() {
-    // Poll every 5 seconds to check if email was verified via link click
-    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+    // Poll every 3 seconds to check if email was verified via link click
+    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      final provider = context.read<SplitwiseProvider>();
-      final isVerified = await provider.checkEmailVerified();
-      if (isVerified && mounted && !_isPhoneMode) {
-        timer.cancel();
-        _timer?.cancel();
-        // Auto-advance to phone verification if needed
-        final user = provider.currentUser;
-        if (user.phoneNumber != null &&
-            user.phoneNumber!.isNotEmpty &&
-            !user.isPhoneVerified) {
-          _clearDigits();
-          setState(() => _isPhoneMode = true);
-        } else {
-          // Fully verified, navigate back
-          if (mounted) {
-            Navigator.of(context).pop();
-          }
-        }
-      }
+      await _checkVerificationStatus();
     });
   }
 
@@ -82,13 +126,6 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     });
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _pollingTimer?.cancel();
-    super.dispose();
-  }
-
   void _clearDigits() {
     setState(() => _errorMessage = null);
   }
@@ -100,7 +137,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     });
 
     final provider = context.read<SplitwiseProvider>();
-    final error = await provider.verifyEmail(''); // Code not needed for link-based
+    final error = await provider.verifyEmail(''); // Link-based check
 
     if (mounted) {
       setState(() {
@@ -109,13 +146,38 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       });
 
       if (error == null) {
+        _pollingTimer?.cancel();
+        _timer?.cancel();
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle_outline, color: Colors.white, size: 20),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Email verified successfully! Welcome to SplitIt.',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: AppTheme.teal,
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 3),
+          ),
+        );
+
         final user = provider.currentUser;
         if (user.phoneNumber != null &&
             user.phoneNumber!.isNotEmpty &&
             !user.isPhoneVerified) {
           setState(() => _isPhoneMode = true);
         } else {
-          Navigator.of(context).pop();
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).pop();
+          }
         }
       }
     }

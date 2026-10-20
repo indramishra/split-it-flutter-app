@@ -653,6 +653,9 @@ class SplitwiseProvider extends ChangeNotifier {
     } on GoogleSignInException catch (e) {
       debugPrint('Google sign-in error: ${e.code} - ${e.description}');
       if (e.code == GoogleSignInExceptionCode.canceled) {
+        if (e.description != null && e.description!.trim().isNotEmpty) {
+          return 'Google sign-in cancelled: ${e.description}';
+        }
         return 'Google sign-in was cancelled.';
       }
       return 'Google sign-in failed: ${e.description ?? e.code.name}';
@@ -694,11 +697,49 @@ class SplitwiseProvider extends ChangeNotifier {
     }
   }
 
-  /// Checks if email is verified via Firebase Auth
+  /// Checks if email is verified via Firebase Auth and updates user state
   Future<bool> checkEmailVerified() async {
-    if (_auth.currentUser == null) return false;
-    await _auth.currentUser!.reload();
-    return _auth.currentUser!.emailVerified;
+    if (_auth.currentUser == null || _currentUser == null) return false;
+    try {
+      await _auth.currentUser!.reload();
+      final isVerified = _auth.currentUser!.emailVerified;
+      if (isVerified && !_currentUser!.isEmailVerified) {
+        final updatedUser = _currentUser!.copyWith(
+          isEmailVerified: true,
+          clearVerificationCode: true,
+        );
+        _currentUser = updatedUser;
+
+        final verifyAct = ActivityItem(
+          id: _uuid.v4(),
+          title: 'Email verified',
+          subtitle: '${updatedUser.email} was confirmed',
+          timestamp: DateTime.now(),
+          userId: updatedUser.id,
+        );
+        _activities.add(verifyAct);
+
+        final firestore = FirebaseFirestore.instance;
+        final batch = firestore.batch();
+        batch.update(firestore.collection('users').doc(updatedUser.id), {
+          'isEmailVerified': true,
+        });
+        batch.set(firestore.collection('activities').doc(verifyAct.id), verifyAct.toJson());
+        await batch.commit();
+
+        await NotificationService().showNotification(
+          id: 9992,
+          title: 'Email Verified 🎉',
+          body: 'Your email is now verified on SplitIt!',
+        );
+
+        notifyListeners();
+      }
+      return isVerified;
+    } catch (e) {
+      debugPrint('Error in checkEmailVerified: $e');
+      return false;
+    }
   }
 
   /// Verifies email by checking Firebase Auth status

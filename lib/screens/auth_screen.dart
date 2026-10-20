@@ -872,14 +872,14 @@ class _AuthScreenState extends State<AuthScreen> {
                                 color: AppTheme.teal,
                               ),
                             )
-                          : const Row(
+                          : Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                GoogleLogo(size: 20),
-                                SizedBox(width: 12),
+                                const GoogleLogo(size: 20),
+                                const SizedBox(width: 12),
                                 Text(
-                                  'Continue with Google',
-                                  style: TextStyle(
+                                  _isSignUp ? 'Sign up with Google' : 'Continue with Google',
+                                  style: const TextStyle(
                                     fontSize: 15,
                                     fontWeight: FontWeight.w600,
                                   ),
