@@ -44,6 +44,8 @@ class SplitwiseProvider extends ChangeNotifier {
   StreamSubscription? _activitiesSub;
   StreamSubscription? _notificationsSub;
 
+  bool _googleSignInInitialized = false;
+
   SplitwiseProvider() {
     _initAuth();
   }
@@ -136,6 +138,24 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<void> _initAuth() async {
     try {
+      // First, try to restore session from Firebase Auth (covers email, Google OAuth)
+      final firebaseUser = _auth.currentUser;
+      if (firebaseUser != null) {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(firebaseUser.uid)
+            .get();
+        if (doc.exists && doc.data() != null) {
+          _currentUser = User.fromJson(doc.data()!);
+          if (!_users.any((u) => u.id == _currentUser!.id)) {
+            _users.add(_currentUser!);
+          }
+          _bindUserStreams();
+          return;
+        }
+      }
+
+      // Fallback: restore from SharedPreferences (covers phone/password-only users)
       final prefs = await SharedPreferences.getInstance();
       final savedUserId = prefs.getString('active_user_id');
       if (savedUserId != null && savedUserId.isNotEmpty) {
@@ -399,6 +419,12 @@ class SplitwiseProvider extends ChangeNotifier {
 
       _currentUser = user;
 
+      if (!_users.any((u) => u.id == user!.id)) {
+        _users.add(user);
+      }
+
+      _bindUserStreams();
+
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('active_user_id', _currentUser!.id);
@@ -406,19 +432,22 @@ class SplitwiseProvider extends ChangeNotifier {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
       }
 
-      // Check if email verification is needed (use Firebase Auth status)
+      // Sync email verification status from Firebase Auth
       if (isEmail && _auth.currentUser != null) {
         await _auth.currentUser!.reload();
-        if (!_auth.currentUser!.emailVerified) {
-          await sendEmailVerificationCode(); // Resend verification link
+        final isVerifiedInFirebase = _auth.currentUser!.emailVerified;
+        if (isVerifiedInFirebase && !_currentUser!.isEmailVerified) {
+          // Update local + Firestore if Firebase shows it's verified but our DB doesn't
+          _currentUser = _currentUser!.copyWith(isEmailVerified: true);
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(_currentUser!.id)
+              .update({'isEmailVerified': true})
+              .catchError((_) {});
+        } else if (!isVerifiedInFirebase) {
+          // Only send verification if not already verified
+          sendEmailVerificationCode();
         }
-      }
-
-      // Check if phone verification is needed
-      if (_currentUser!.phoneNumber != null &&
-          _currentUser!.phoneNumber!.isNotEmpty &&
-          !_currentUser!.isPhoneVerified) {
-        sendPhoneVerificationCode();
       }
 
       notifyListeners();
@@ -491,8 +520,26 @@ class SplitwiseProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    _cancelUserStreams();
     _currentUser = null;
-    await GoogleSignIn.instance.signOut();
+    _groups.clear();
+    _expenses.clear();
+    _activities.clear();
+    _notifications.clear();
+    // Sign out from Firebase Auth (covers email and Google OAuth sessions)
+    try {
+      await _auth.signOut();
+    } catch (e) {
+      debugPrint('Firebase sign-out error: $e');
+    }
+    // Sign out from Google Sign-In if it was initialized
+    if (_googleSignInInitialized) {
+      try {
+        await GoogleSignIn.instance.signOut();
+      } catch (e) {
+        debugPrint('Google sign-out error: $e');
+      }
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('active_user_id');
@@ -508,51 +555,51 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<String?> signInWithGoogle() async {
     try {
-      // Initialize Google Sign-In
-      await GoogleSignIn.instance.initialize(
-        // clientId and serverClientId will be read from platform config files
-      );
+      // Initialize Google Sign-In exactly once
+      if (!_googleSignInInitialized) {
+        await GoogleSignIn.instance.initialize();
+        _googleSignInInitialized = true;
+      }
 
       final GoogleSignInAccount account = await GoogleSignIn.instance.authenticate(
         scopeHint: ['email', 'profile'],
       );
-      
+
       final idToken = account.authentication.idToken;
       if (idToken == null) {
-        return 'Failed to get ID token from Google.';
+        return 'Google sign-in failed: could not get ID token. Please ensure Google Sign-In is enabled in Firebase Console and a Web Client ID (OAuth 2.0) is configured.';
       }
 
       final AuthCredential credential = GoogleAuthProvider.credential(idToken: idToken);
 
       final UserCredential userCredential = await _auth.signInWithCredential(credential);
-      
+
       if (userCredential.user == null) {
         return 'Failed to sign in with Google.';
       }
 
       final firestore = FirebaseFirestore.instance;
       final uid = userCredential.user!.uid;
-      
+
       // Check if user document exists
       final userDoc = await firestore.collection('users').doc(uid).get();
       User appUser;
 
       if (userDoc.exists) {
-        // Existing user - update if needed
+        // Existing user - update profile info from Google if changed
         appUser = User.fromJson(userDoc.data()!);
-        
-        // Update profile info from Google if changed
-        if (appUser.name != account.displayName || 
+        final needsUpdate = appUser.name != (account.displayName ?? appUser.name) ||
             appUser.email != account.email ||
-            (appUser.avatarUrl != account.photoUrl)) {
-          final updatedUser = appUser.copyWith(
+            appUser.avatarUrl != account.photoUrl ||
+            !appUser.isEmailVerified;
+        if (needsUpdate) {
+          appUser = appUser.copyWith(
             name: account.displayName ?? appUser.name,
             email: account.email,
             avatarUrl: account.photoUrl,
             isEmailVerified: true, // Google emails are pre-verified
           );
-          await firestore.collection('users').doc(uid).update(updatedUser.toJson());
-          appUser = updatedUser;
+          await firestore.collection('users').doc(uid).set(appUser.toJson());
         }
       } else {
         // New user - create document
@@ -574,10 +621,20 @@ class SplitwiseProvider extends ChangeNotifier {
           timestamp: DateTime.now(),
           userId: appUser.id,
         );
-        firestore.collection('activities').doc(welcomeAct.id).set(welcomeAct.toJson()).catchError((_) {});
+        firestore
+            .collection('activities')
+            .doc(welcomeAct.id)
+            .set(welcomeAct.toJson())
+            .catchError((_) {});
       }
 
       _currentUser = appUser;
+
+      if (!_users.any((u) => u.id == appUser.id)) {
+        _users.add(appUser);
+      }
+
+      _bindUserStreams();
 
       try {
         final prefs = await SharedPreferences.getInstance();
@@ -586,17 +643,18 @@ class SplitwiseProvider extends ChangeNotifier {
         debugPrint('Failed to save session to SharedPreferences: $prefErr');
       }
 
-      // No phone verification needed for Google sign-in unless user adds phone later
-      if (appUser.phoneNumber != null && appUser.phoneNumber!.isNotEmpty && !appUser.isPhoneVerified) {
-        sendPhoneVerificationCode();
-      }
-
       notifyListeners();
       return null;
+    } on GoogleSignInException catch (e) {
+      debugPrint('Google sign-in error: ${e.code} - ${e.description}');
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        return null; // User cancelled — not an error
+      }
+      return 'Google sign-in failed: ${e.description ?? e.code.name}';
     } on FirebaseAuthException catch (e) {
       debugPrint('Google sign-in Firebase error: ${e.code} - ${e.message}');
       if (e.code == 'account-exists-with-different-credential') {
-        return 'An account already exists with this email. Please sign in with your password or link the accounts.';
+        return 'An account already exists with this email. Please sign in with your password.';
       }
       return 'Google sign-in failed: ${e.message}';
     } catch (e) {
@@ -692,12 +750,15 @@ class SplitwiseProvider extends ChangeNotifier {
   // PHONE VERIFICATION (Firebase Phone Auth)
   // ==========================================
 
-  /// Sends a real SMS verification code using Firebase Phone Auth
+  /// Sends a real SMS verification code using Firebase Phone Auth.
+  /// Uses a Completer so we properly await codeSent/verificationFailed.
   Future<String?> sendPhoneVerificationCode({String? phoneNumber}) async {
     final targetPhone = phoneNumber ?? _currentUser?.phoneNumber;
     if (targetPhone == null || targetPhone.isEmpty) {
       return 'No phone number provided.';
     }
+
+    final completer = Completer<String?>();
 
     try {
       await _auth.verifyPhoneNumber(
@@ -705,22 +766,46 @@ class SplitwiseProvider extends ChangeNotifier {
         verificationCompleted: (PhoneAuthCredential credential) async {
           // Auto-verification on Android (SMS retrieval API)
           await _linkPhoneCredential(credential);
+          if (!completer.isCompleted) completer.complete(null);
         },
         verificationFailed: (FirebaseAuthException e) {
-          debugPrint('Phone verification failed: ${e.message}');
+          debugPrint('Phone verification failed: ${e.code} - ${e.message}');
+          if (!completer.isCompleted) {
+            String msg;
+            switch (e.code) {
+              case 'invalid-phone-number':
+                msg = 'Invalid phone number format. Please use international format (e.g. +91xxxxxxxxxx).';
+                break;
+              case 'quota-exceeded':
+                msg = 'SMS quota exceeded. Please try again later.';
+                break;
+              case 'too-many-requests':
+                msg = 'Too many SMS requests. Please wait a moment before trying again.';
+                break;
+              case 'billing-not-enabled':
+                msg = 'SMS sending is not enabled. Please contact support.';
+                break;
+              default:
+                msg = 'Failed to send SMS: ${e.message ?? e.code}';
+            }
+            completer.complete(msg);
+          }
         },
         codeSent: (String verificationId, int? resendToken) {
           _verificationId = verificationId;
           _resendToken = resendToken;
-          debugPrint('SMS code sent to $targetPhone');
+          debugPrint('SMS code sent to $targetPhone (verificationId: $verificationId)');
+          if (!completer.isCompleted) completer.complete(null);
         },
         codeAutoRetrievalTimeout: (String verificationId) {
           _verificationId = verificationId;
+          if (!completer.isCompleted) completer.complete(null);
         },
         forceResendingToken: _resendToken,
-        timeout: const Duration(minutes: 2),
+        timeout: const Duration(seconds: 60),
       );
-      return null;
+      // Wait for codeSent or verificationFailed callback
+      return await completer.future;
     } catch (e) {
       debugPrint('Error sending SMS: $e');
       return 'Failed to send SMS: $e';

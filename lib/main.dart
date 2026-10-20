@@ -83,7 +83,12 @@ class SplitItRoot extends StatelessWidget {
     }
 
     final user = provider.currentUser;
-    final needsEmail = !user.isEmailVerified;
+
+    // Email users: must verify email unless no email provided (phone-only accounts)
+    final hasEmail = user.email.isNotEmpty;
+    final needsEmail = hasEmail && !user.isEmailVerified;
+
+    // Phone users: must verify phone (only if phone is registered and not yet verified)
     final needsPhone = user.phoneNumber != null &&
         user.phoneNumber!.isNotEmpty &&
         !user.isPhoneVerified;
