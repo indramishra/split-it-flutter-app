@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/country_code_picker.dart';
+import '../widgets/google_logo.dart';
 import 'forgot_password_screen.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -23,6 +24,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _isGoogleLoading = false;
   String? _errorMessage;
   String? _successMessage;
 
@@ -258,6 +260,7 @@ class _AuthScreenState extends State<AuthScreen> {
       _errorMessage = null;
       _successMessage = null;
       _isLoading = true;
+      _isGoogleLoading = true;
     });
 
     final provider = context.read<SplitwiseProvider>();
@@ -266,8 +269,26 @@ class _AuthScreenState extends State<AuthScreen> {
     if (mounted) {
       setState(() {
         _isLoading = false;
+        _isGoogleLoading = false;
         _errorMessage = error;
       });
+
+      if (error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Expanded(child: Text(error, style: const TextStyle(fontSize: 13))),
+              ],
+            ),
+            backgroundColor: AppTheme.negativeOrange,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     }
   }
 
@@ -833,7 +854,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   SizedBox(
                     width: double.infinity,
                     height: 50,
-                    child: OutlinedButton.icon(
+                    child: OutlinedButton(
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppTheme.charcoal,
                         side: BorderSide(color: Colors.grey.shade300, width: 1.5),
@@ -842,18 +863,29 @@ class _AuthScreenState extends State<AuthScreen> {
                         backgroundColor: Colors.white,
                       ),
                       onPressed: _isLoading ? null : _signInWithGoogle,
-                      icon: const Icon(
-                        Icons.g_mobiledata,
-                        size: 22,
-                        color: Colors.red,
-                      ),
-                      label: const Text(
-                        'Continue with Google',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+                      child: _isGoogleLoading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.2,
+                                color: AppTheme.teal,
+                              ),
+                            )
+                          : const Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                GoogleLogo(size: 20),
+                                SizedBox(width: 12),
+                                Text(
+                                  'Continue with Google',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
                     ),
                   ),
 

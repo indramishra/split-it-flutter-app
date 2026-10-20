@@ -555,9 +555,13 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<String?> signInWithGoogle() async {
     try {
-      // Initialize Google Sign-In exactly once
+      const webClientId = '236349691458-bom1i04b9f5fl6pdm28i1vckcdkprl1h.apps.googleusercontent.com';
+
+      // Initialize Google Sign-In with serverClientId for Android / Web
       if (!_googleSignInInitialized) {
-        await GoogleSignIn.instance.initialize();
+        await GoogleSignIn.instance.initialize(
+          serverClientId: webClientId,
+        );
         _googleSignInInitialized = true;
       }
 
@@ -566,8 +570,9 @@ class SplitwiseProvider extends ChangeNotifier {
       );
 
       final idToken = account.authentication.idToken;
-      if (idToken == null) {
-        return 'Google sign-in failed: could not get ID token. Please ensure Google Sign-In is enabled in Firebase Console and a Web Client ID (OAuth 2.0) is configured.';
+      if (idToken == null || idToken.isEmpty) {
+        debugPrint('Google Sign-In: ID token is null from authenticate()');
+        return 'Google sign-in failed: could not retrieve ID token. Please check that Google Sign-In is enabled in Firebase Console.';
       }
 
       final AuthCredential credential = GoogleAuthProvider.credential(idToken: idToken);
@@ -648,7 +653,7 @@ class SplitwiseProvider extends ChangeNotifier {
     } on GoogleSignInException catch (e) {
       debugPrint('Google sign-in error: ${e.code} - ${e.description}');
       if (e.code == GoogleSignInExceptionCode.canceled) {
-        return null; // User cancelled — not an error
+        return 'Google sign-in was cancelled.';
       }
       return 'Google sign-in failed: ${e.description ?? e.code.name}';
     } on FirebaseAuthException catch (e) {
