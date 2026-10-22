@@ -8,6 +8,7 @@ import 'screens/email_verification_screen.dart';
 import 'screens/main_screen.dart';
 import 'services/notification_service.dart';
 import 'theme/app_theme.dart';
+import 'widgets/app_logo.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,26 +50,9 @@ class SplitItRoot extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppTheme.tealLight,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.call_split,
-                  size: 48,
-                  color: AppTheme.teal,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'SplitIt',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w800,
-                  color: AppTheme.charcoal,
-                ),
+              const SplitItBrandHeader(
+                logoSize: 72,
+                fontSize: 30,
               ),
               const SizedBox(height: 24),
               const CircularProgressIndicator(color: AppTheme.teal),

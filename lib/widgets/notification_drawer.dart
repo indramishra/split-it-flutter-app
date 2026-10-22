@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/splitwise_provider.dart';
 import '../models/notification_model.dart';
 import '../theme/app_theme.dart';
+import 'app_logo.dart';
 
 class NotificationDrawer extends StatefulWidget {
   const NotificationDrawer({super.key});
@@ -387,26 +388,10 @@ class _NotificationDrawerState extends State<NotificationDrawer> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              color: AppTheme.teal,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const Icon(Icons.call_split, color: Colors.white, size: 16),
-                          ),
-                          const SizedBox(width: 8),
-                          const Text(
-                            'SplitIt',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 16,
-                              color: AppTheme.charcoal,
-                            ),
-                          ),
-                        ],
+                      const SplitItBrandHeader(
+                        logoSize: 22,
+                        fontSize: 16,
+                        isVertical: false,
                       ),
                       const Divider(height: 24),
                       Text(

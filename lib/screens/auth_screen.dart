@@ -4,6 +4,7 @@ import '../providers/splitwise_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/country_code_picker.dart';
 import '../widgets/google_logo.dart';
+import '../widgets/app_logo.dart';
 import 'forgot_password_screen.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -310,27 +311,9 @@ class _AuthScreenState extends State<AuthScreen> {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   // App Branding Header
-                  Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: AppTheme.tealLight,
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.call_split,
-                      size: 44,
-                      color: AppTheme.teal,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'SplitIt',
-                    style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.charcoal,
-                      letterSpacing: -0.5,
-                    ),
+                  const SplitItBrandHeader(
+                    logoSize: 64,
+                    fontSize: 32,
                   ),
                   const SizedBox(height: 6),
                   const Text(

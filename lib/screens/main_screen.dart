@@ -6,6 +6,7 @@ import '../services/notification_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/balance_banner.dart';
 import '../widgets/notification_drawer.dart';
+import '../widgets/app_logo.dart';
 import 'add_expense_screen.dart';
 import 'group_detail_screen.dart';
 import 'friend_detail_screen.dart';
@@ -37,22 +38,10 @@ class _MainScreenState extends State<MainScreen> {
     return Scaffold(
       endDrawer: const NotificationDrawer(),
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(6),
-              decoration: BoxDecoration(
-                color: AppTheme.teal,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: const Icon(Icons.call_split, color: Colors.white, size: 20),
-            ),
-            const SizedBox(width: 10),
-            const Text(
-              'SplitIt',
-              style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.3),
-            ),
-          ],
+        title: const SplitItBrandHeader(
+          logoSize: 28,
+          fontSize: 20,
+          isVertical: false,
         ),
         actions: [
           IconButton(
