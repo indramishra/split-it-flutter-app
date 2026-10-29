@@ -539,6 +539,8 @@ class SplitwiseProvider extends ChangeNotifier {
       } catch (e) {
         debugPrint('Google sign-out error: $e');
       }
+      // Reset flag so the next signInWithGoogle() call re-initializes cleanly.
+      _googleSignInInitialized = false;
     }
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -563,6 +565,19 @@ class SplitwiseProvider extends ChangeNotifier {
           serverClientId: webClientId,
         );
         _googleSignInInitialized = true;
+      }
+
+      // Sign out first to clear any stale/expired cached session.
+      // google_sign_in v7 caches the last account and tries a silent re-auth on
+      // the next authenticate() call. If that silent re-auth fails (token expired,
+      // account state changed, etc.) it throws GoogleSignInException with code
+      // `canceled` and description "[16] Account reauth failed." — which is not a
+      // real user cancellation. Signing out first forces the account-picker UI to
+      // always appear and avoids the stale-session reauth path entirely.
+      try {
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {
+        // Ignore sign-out errors; proceed with fresh authentication.
       }
 
       final GoogleSignInAccount account = await GoogleSignIn.instance.authenticate(
@@ -653,8 +668,16 @@ class SplitwiseProvider extends ChangeNotifier {
     } on GoogleSignInException catch (e) {
       debugPrint('Google sign-in error: ${e.code} - ${e.description}');
       if (e.code == GoogleSignInExceptionCode.canceled) {
-        if (e.description != null && e.description!.trim().isNotEmpty) {
-          return 'Google sign-in cancelled: ${e.description}';
+        // Error code [16] means a silent reauth attempt failed internally — this
+        // is NOT a real user cancellation. Show a friendly retry message instead
+        // of exposing the raw "[16] Account reauth failed" technical string.
+        final desc = e.description ?? '';
+        if (desc.contains('[16]') || desc.contains('reauth')) {
+          return 'Google sign-in failed. Please try again.';
+        }
+        // Empty or whitespace description = genuine user dismissal (back button).
+        if (desc.trim().isEmpty) {
+          return null; // Treat as no-op — user simply closed the picker.
         }
         return 'Google sign-in was cancelled.';
       }
