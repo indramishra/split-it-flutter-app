@@ -1,8 +1,12 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
-/// Authentic brand logo for SplitIt using vector canvas paths
-/// styled with the official AppTheme teal palette.
+/// Authentic signature brand logo for SplitIt.
+///
+/// Designed around the app's motto: "Split bills and share expenses with friends & groups."
+/// Features an itemized restaurant/expense bill cleanly divided into two balanced shares
+/// that slide apart along a precision diagonal cut, forming an abstract 'S' monogram.
 class SplitItLogo extends StatelessWidget {
   final double size;
   final bool showBackground;
@@ -17,6 +21,22 @@ class SplitItLogo extends StatelessWidget {
     this.borderRadius,
   });
 
+  /// Paint the SplitIt emblem vector directly onto any custom canvas
+  static void paintEmblem(
+    Canvas canvas,
+    Size size, {
+    Color billColor = Colors.white,
+    Color lineColor = const Color(0x59148E74),
+    Color dotColor = const Color(0xFF1CC29F),
+  }) {
+    final painter = _SplitItLogoPainter(
+      billColor: billColor,
+      lineColor: lineColor,
+      dotColor: dotColor,
+    );
+    painter.paint(canvas, size);
+  }
+
   @override
   Widget build(BuildContext context) {
     final radius = borderRadius ?? BorderRadius.circular(size * 0.28);
@@ -28,8 +48,11 @@ class SplitItLogo extends StatelessWidget {
         child: CustomPaint(
           size: Size(size, size),
           painter: _SplitItLogoPainter(
-            primaryColor: useWhiteEmblem ? Colors.white : AppTheme.teal,
-            secondaryColor: useWhiteEmblem ? Colors.white70 : AppTheme.tealDark,
+            billColor: useWhiteEmblem ? Colors.white : AppTheme.teal,
+            lineColor: useWhiteEmblem
+                ? const Color(0x80FFFFFF)
+                : Colors.white.withValues(alpha: 0.75),
+            dotColor: useWhiteEmblem ? Colors.white : AppTheme.tealDark,
           ),
         ),
       );
@@ -56,11 +79,12 @@ class SplitItLogo extends StatelessWidget {
           ),
         ],
       ),
-      padding: EdgeInsets.all(size * 0.2),
-      child: CustomPaint(
-        painter: const _SplitItLogoPainter(
-          primaryColor: Colors.white,
-          secondaryColor: Color(0xFFD4FAF1),
+      padding: EdgeInsets.all(size * 0.16),
+      child: const CustomPaint(
+        painter: _SplitItLogoPainter(
+          billColor: Colors.white,
+          lineColor: Color(0x59148E74),
+          dotColor: Color(0xFF1CC29F),
         ),
       ),
     );
@@ -151,90 +175,124 @@ class SplitItBrandHeader extends StatelessWidget {
   }
 }
 
+/// Precision vector painter for the SplitIt brand mark: "The Precision Split Bill".
 class _SplitItLogoPainter extends CustomPainter {
-  final Color primaryColor;
-  final Color secondaryColor;
+  final Color billColor;
+  final Color lineColor;
+  final Color dotColor;
 
   const _SplitItLogoPainter({
-    required this.primaryColor,
-    required this.secondaryColor,
+    required this.billColor,
+    required this.lineColor,
+    required this.dotColor,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final scale = size.width / 100.0;
+    // Coordinate space normalized to 200x200 centered at (0, 0)
+    final scale = size.width / 200.0;
     canvas.save();
+    canvas.translate(size.width / 2, size.height / 2);
     canvas.scale(scale, scale);
 
-    final strokePaint1 = Paint()
-      ..color = primaryColor
+    // Dynamic 15-degree posture
+    canvas.rotate(-15 * math.pi / 180);
+
+    final billPaint = Paint()
+      ..color = billColor
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+
+    final linePaint = Paint()
+      ..color = lineColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 11.0
+      ..strokeWidth = 4.2
       ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
       ..isAntiAlias = true;
 
-    final strokePaint2 = Paint()
-      ..color = secondaryColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 11.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..isAntiAlias = true;
-
-    final fillPaint1 = Paint()
-      ..color = primaryColor
+    final dotPaint = Paint()
+      ..color = dotColor
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
 
-    final fillPaint2 = Paint()
-      ..color = secondaryColor
-      ..style = PaintingStyle.fill
-      ..isAntiAlias = true;
+    // Displacement along the precision diagonal slice
+    const double shiftX = 5.5;
+    const double shiftY = 6.5;
 
-    // --- Upper 'S' Arc flowing Right-Up with Arrow Head ---
-    final topPath = Path()
-      ..moveTo(22, 60)
-      ..cubicTo(20, 38, 38, 22, 60, 22)
-      ..cubicTo(74, 22, 82, 30, 84, 42);
-    canvas.drawPath(topPath, strokePaint1);
+    // --- TOP-RIGHT RECEIPT HALF (Person A / Group Share 1) ---
+    canvas.save();
+    canvas.translate(shiftX, -shiftY);
 
-    // Top arrow tip (pointing up-right)
-    final topArrow = Path()
-      ..moveTo(84, 32)
-      ..lineTo(94, 44)
-      ..lineTo(78, 50)
+    final topHalf = Path()
+      ..moveTo(-44, 12)
+      ..lineTo(-44, -46)
+      ..cubicTo(-44, -58, -34, -58, -26, -58)
+      // Serrated tear notches
+      ..lineTo(-18, -58)
+      ..lineTo(-14, -53)
+      ..lineTo(-10, -58)
+      ..lineTo(-2, -58)
+      ..lineTo(2, -53)
+      ..lineTo(6, -58)
+      ..lineTo(14, -58)
+      ..lineTo(18, -53)
+      ..lineTo(22, -58)
+      ..lineTo(34, -58)
+      ..cubicTo(44, -58, 44, -48, 44, -46)
+      ..lineTo(44, -24)
+      ..lineTo(-44, 12)
       ..close();
-    canvas.drawPath(topArrow, fillPaint1);
 
-    // --- Lower 'S' Arc flowing Left-Down with Arrow Head ---
-    final bottomPath = Path()
-      ..moveTo(78, 40)
-      ..cubicTo(80, 62, 62, 78, 40, 78)
-      ..cubicTo(26, 78, 18, 70, 16, 58);
-    canvas.drawPath(bottomPath, strokePaint2);
+    canvas.drawPath(topHalf, billPaint);
 
-    // Bottom arrow tip (pointing down-left)
-    final bottomArrow = Path()
-      ..moveTo(16, 68)
-      ..lineTo(6, 56)
-      ..lineTo(22, 50)
+    // Itemized receipt lines & share token
+    canvas.drawLine(const Offset(-28, -42), const Offset(14, -42), linePaint);
+    canvas.drawLine(const Offset(-28, -30), const Offset(-2, -30), linePaint);
+    canvas.drawCircle(const Offset(22, -30), 4.8, dotPaint);
+
+    canvas.restore();
+
+    // --- BOTTOM-LEFT RECEIPT HALF (Person B / Group Share 2) ---
+    // 180-degree rotational symmetry
+    canvas.save();
+    canvas.translate(-shiftX, shiftY);
+
+    final bottomHalf = Path()
+      ..moveTo(44, -12)
+      ..lineTo(44, 46)
+      ..cubicTo(44, 58, 34, 58, 26, 58)
+      // Serrated tear notches
+      ..lineTo(18, 58)
+      ..lineTo(14, 53)
+      ..lineTo(10, 58)
+      ..lineTo(2, 58)
+      ..lineTo(-2, 53)
+      ..lineTo(-6, 58)
+      ..lineTo(-14, 58)
+      ..lineTo(-18, 53)
+      ..lineTo(-22, 58)
+      ..lineTo(-34, 58)
+      ..cubicTo(-44, 58, -44, 48, -44, 46)
+      ..lineTo(-44, 24)
+      ..lineTo(44, -12)
       ..close();
-    canvas.drawPath(bottomArrow, fillPaint2);
 
-    // --- Center Split Division Node (subtle connecting pulse) ---
-    final centerPulse = Paint()
-      ..color = primaryColor
-      ..style = PaintingStyle.fill
-      ..isAntiAlias = true;
-    canvas.drawCircle(const Offset(50, 50), 4.5, centerPulse);
+    canvas.drawPath(bottomHalf, billPaint);
+
+    // Itemized receipt lines & share token
+    canvas.drawLine(const Offset(-14, 42), const Offset(28, 42), linePaint);
+    canvas.drawLine(const Offset(2, 30), const Offset(28, 30), linePaint);
+    canvas.drawCircle(const Offset(-22, 30), 4.8, dotPaint);
+
+    canvas.restore();
 
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant _SplitItLogoPainter oldDelegate) {
-    return oldDelegate.primaryColor != primaryColor ||
-        oldDelegate.secondaryColor != secondaryColor;
+    return oldDelegate.billColor != billColor ||
+        oldDelegate.lineColor != lineColor ||
+        oldDelegate.dotColor != dotColor;
   }
 }

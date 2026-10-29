@@ -1,12 +1,22 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:splitwise_app/models/expense.dart';
 import 'package:splitwise_app/models/user.dart';
 import 'package:splitwise_app/services/debt_simplifier.dart';
+import 'package:splitwise_app/widgets/app_logo.dart';
 
 void main() {
-  testWidgets('SplitItApp unit test structure', (WidgetTester tester) async {
-    // Tests are supported
-    expect(true, isTrue);
+  testWidgets('SplitItLogo renders cleanly', (WidgetTester tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SplitItLogo(size: 64),
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(SplitItLogo), findsOneWidget);
   });
 
   test('DebtSimplifier algorithm correctly minimizes transactions', () {
