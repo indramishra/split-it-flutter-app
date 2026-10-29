@@ -402,95 +402,123 @@ class SplitwiseProvider extends ChangeNotifier {
       User? user;
 
       if (isEmail) {
-        // Sign in with Firebase Auth
-        try {
-          final authCredential = await _auth.signInWithEmailAndPassword(
-            email: cleanEmail,
-            password: password,
-          );
+        // Check Firestore first: if an updated password exists (from resetPasswordWithCode or custom auth),
+        // that updated password is the single authoritative current password.
+        final userCheckSnap = await firestore
+            .collection('users')
+            .where('email', isEqualTo: cleanEmail)
+            .limit(1)
+            .get();
 
-          // Get user data from Firestore by Firebase Auth UID
-          final snap = await firestore
-              .collection('users')
-              .doc(authCredential.user!.uid)
-              .get();
+        String? storedPassword;
+        Map<String, dynamic>? userDocData;
+        String? existingDocId;
 
-          if (snap.exists && snap.data() != null) {
-            user = User.fromJson(snap.data()!);
-          } else {
-            // Check if user exists by email (e.g. from an addFriend placeholder with a UUID)
-            final emailSnap = await firestore
+        if (userCheckSnap.docs.isNotEmpty) {
+          existingDocId = userCheckSnap.docs.first.id;
+          userDocData = userCheckSnap.docs.first.data();
+          storedPassword = userDocData['password'] as String?;
+        }
+
+        // If an updated password was stored, reject any attempt to use the previous/old password
+        if (storedPassword != null && storedPassword != password) {
+          return 'Incorrect password. You recently updated your password; please enter your new password.';
+        }
+
+        if (storedPassword != null && storedPassword == password) {
+          // User authenticated with the updated password
+          user = User.fromJson(userDocData!);
+
+          // Attempt to sync the new password to Firebase Auth
+          try {
+            await _auth.signInWithEmailAndPassword(
+              email: cleanEmail,
+              password: password,
+            );
+            // In sync! Clean up the plaintext password from Firestore
+            await firestore.collection('users').doc(existingDocId).update({
+              'password': FieldValue.delete(),
+            }).catchError((_) {});
+          } catch (_) {
+            // Firebase Auth still has old hash; user is safely authenticated via updated password
+          }
+        } else {
+          // Standard Firebase Auth sign-in
+          try {
+            final authCredential = await _auth.signInWithEmailAndPassword(
+              email: cleanEmail,
+              password: password,
+            );
+
+            // Clean up any stale password in Firestore
+            if (existingDocId != null) {
+              await firestore.collection('users').doc(existingDocId).update({
+                'password': FieldValue.delete(),
+              }).catchError((_) {});
+            }
+
+            // Get user data from Firestore by Firebase Auth UID
+            final snap = await firestore
                 .collection('users')
-                .where('email', isEqualTo: cleanEmail)
-                .limit(1)
+                .doc(authCredential.user!.uid)
                 .get();
-            if (emailSnap.docs.isNotEmpty) {
-              final oldDoc = emailSnap.docs.first;
-              final oldData = oldDoc.data();
-              final migratedUser = User.fromJson({
-                ...oldData,
-                'id': authCredential.user!.uid,
-                'isEmailVerified': authCredential.user!.emailVerified,
-              });
-              await firestore
+
+            if (snap.exists && snap.data() != null) {
+              user = User.fromJson(snap.data()!);
+            } else {
+              // Check if user exists by email (e.g. from an addFriend placeholder with a UUID)
+              final emailSnap = await firestore
                   .collection('users')
-                  .doc(authCredential.user!.uid)
-                  .set(migratedUser.toJson());
-              if (oldDoc.id != authCredential.user!.uid) {
-                await firestore.collection('users').doc(oldDoc.id).delete().catchError((_) {});
+                  .where('email', isEqualTo: cleanEmail)
+                  .limit(1)
+                  .get();
+              if (emailSnap.docs.isNotEmpty) {
+                final oldDoc = emailSnap.docs.first;
+                final oldData = oldDoc.data();
+                final migratedUser = User.fromJson({
+                  ...oldData,
+                  'id': authCredential.user!.uid,
+                  'isEmailVerified': authCredential.user!.emailVerified,
+                });
+                await firestore
+                    .collection('users')
+                    .doc(authCredential.user!.uid)
+                    .set(migratedUser.toJson());
+                if (oldDoc.id != authCredential.user!.uid) {
+                  await firestore.collection('users').doc(oldDoc.id).delete().catchError((_) {});
+                }
+                user = migratedUser;
+              } else {
+                // Rebuild the document from Firebase Auth profile
+                final fbUser = authCredential.user!;
+                final recoveredUser = User(
+                  id: fbUser.uid,
+                  name: fbUser.displayName ?? cleanEmail.split('@').first,
+                  email: cleanEmail,
+                  isEmailVerified: fbUser.emailVerified,
+                  createdAt: DateTime.now(),
+                );
+                await firestore
+                    .collection('users')
+                    .doc(fbUser.uid)
+                    .set(recoveredUser.toJson());
+                user = recoveredUser;
               }
-              user = migratedUser;
-            } else {
-              // Rebuild the document from Firebase Auth profile
-              final fbUser = authCredential.user!;
-              final recoveredUser = User(
-                id: fbUser.uid,
-                name: fbUser.displayName ?? cleanEmail.split('@').first,
-                email: cleanEmail,
-                isEmailVerified: fbUser.emailVerified,
-                createdAt: DateTime.now(),
-              );
-              await firestore
-                  .collection('users')
-                  .doc(fbUser.uid)
-                  .set(recoveredUser.toJson());
-              user = recoveredUser;
             }
-          }
-        } on FirebaseAuthException catch (e) {
-          debugPrint('login FirebaseAuthException: ${e.code} - ${e.message}');
-          // Check Firestore to see if this user exists with a custom password (from reset password or phone)
-          final firestoreSnap = await firestore
-              .collection('users')
-              .where('email', isEqualTo: cleanEmail)
-              .limit(1)
-              .get();
-
-          if (firestoreSnap.docs.isNotEmpty) {
-            final docData = firestoreSnap.docs.first.data();
-            final storedPassword = docData['password'] as String?;
-            if (storedPassword != null && storedPassword == password) {
-              // Password matches Firestore stored password!
-              user = User.fromJson(docData);
-            } else if (storedPassword == null) {
+          } on FirebaseAuthException catch (e) {
+            debugPrint('login FirebaseAuthException: ${e.code} - ${e.message}');
+            if (userDocData != null && userDocData['avatarUrl'] != null && storedPassword == null) {
               return 'This email is registered with Google. Please tap "Continue with Google" below.';
-            } else {
-              return 'Incorrect password. Please try again or tap "Forgot Password?".';
             }
-          }
 
-          if (user == null) {
-            if (e.code == 'wrong-password') {
-              return 'Incorrect password. Please try again or tap "Forgot Password?".';
+            if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
+              return 'Incorrect email or password. If you signed up with Google, please tap "Continue with Google".';
             }
             if (e.code == 'user-not-found') {
               return 'No account found with this email. Please switch to Sign Up.';
             }
             if (e.code == 'user-disabled') {
               return 'This account has been disabled.';
-            }
-            if (e.code == 'invalid-credential') {
-              return 'Incorrect email or password. If you signed up with Google, please tap "Continue with Google".';
             }
             return 'Login failed: ${e.message}';
           }
@@ -654,8 +682,8 @@ class SplitwiseProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('Firebase sign-out error: $e');
     }
-    // Sign out from Google Sign-In if it was initialized
-    if (_googleSignInInitialized) {
+    // Sign out from Google Sign-In if it was initialized (mobile only)
+    if (!kIsWeb && _googleSignInInitialized) {
       try {
         await GoogleSignIn.instance.signOut();
       } catch (e) {
@@ -679,50 +707,68 @@ class SplitwiseProvider extends ChangeNotifier {
 
   Future<String?> signInWithGoogle() async {
     try {
-      const webClientId = '236349691458-bom1i04b9f5fl6pdm28i1vckcdkprl1h.apps.googleusercontent.com';
+      UserCredential userCredential;
+      String? displayName;
+      String? email;
+      String? photoUrl;
 
-      // Initialize Google Sign-In with serverClientId for Android / Web
-      if (!_googleSignInInitialized) {
-        await GoogleSignIn.instance.initialize(
-          serverClientId: webClientId,
+      if (kIsWeb) {
+        // Native Web Google Auth via Firebase Auth Popup
+        // google_sign_in plugin's authenticate() is not supported on Web;
+        // signInWithPopup is the official, standard Firebase Web approach.
+        final GoogleAuthProvider googleProvider = GoogleAuthProvider();
+        googleProvider.addScope('email');
+        googleProvider.addScope('profile');
+        userCredential = await _auth.signInWithPopup(googleProvider);
+        if (userCredential.user == null) {
+          return 'Failed to sign in with Google.';
+        }
+        displayName = userCredential.user!.displayName;
+        email = userCredential.user!.email;
+        photoUrl = userCredential.user!.photoURL;
+      } else {
+        const webClientId = '236349691458-bom1i04b9f5fl6pdm28i1vckcdkprl1h.apps.googleusercontent.com';
+
+        // Initialize Google Sign-In with serverClientId for Android / iOS
+        if (!_googleSignInInitialized) {
+          await GoogleSignIn.instance.initialize(
+            serverClientId: webClientId,
+          );
+          _googleSignInInitialized = true;
+        }
+
+        // Sign out first to clear any stale/expired cached session.
+        try {
+          await GoogleSignIn.instance.signOut();
+        } catch (_) {
+          // Ignore sign-out errors; proceed with fresh authentication.
+        }
+
+        final GoogleSignInAccount account = await GoogleSignIn.instance.authenticate(
+          scopeHint: ['email', 'profile'],
         );
-        _googleSignInInitialized = true;
-      }
 
-      // Sign out first to clear any stale/expired cached session.
-      // google_sign_in v7 caches the last account and tries a silent re-auth on
-      // the next authenticate() call. If that silent re-auth fails (token expired,
-      // account state changed, etc.) it throws GoogleSignInException with code
-      // `canceled` and description "[16] Account reauth failed." — which is not a
-      // real user cancellation. Signing out first forces the account-picker UI to
-      // always appear and avoids the stale-session reauth path entirely.
-      try {
-        await GoogleSignIn.instance.signOut();
-      } catch (_) {
-        // Ignore sign-out errors; proceed with fresh authentication.
-      }
+        final idToken = account.authentication.idToken;
+        if (idToken == null || idToken.isEmpty) {
+          debugPrint('Google Sign-In: ID token is null from authenticate()');
+          return 'Google sign-in failed: could not retrieve ID token. Please check that Google Sign-In is enabled in Firebase Console.';
+        }
 
-      final GoogleSignInAccount account = await GoogleSignIn.instance.authenticate(
-        scopeHint: ['email', 'profile'],
-      );
+        final AuthCredential credential = GoogleAuthProvider.credential(idToken: idToken);
 
-      final idToken = account.authentication.idToken;
-      if (idToken == null || idToken.isEmpty) {
-        debugPrint('Google Sign-In: ID token is null from authenticate()');
-        return 'Google sign-in failed: could not retrieve ID token. Please check that Google Sign-In is enabled in Firebase Console.';
-      }
+        userCredential = await _auth.signInWithCredential(credential);
 
-      final AuthCredential credential = GoogleAuthProvider.credential(idToken: idToken);
-
-      final UserCredential userCredential = await _auth.signInWithCredential(credential);
-
-      if (userCredential.user == null) {
-        return 'Failed to sign in with Google.';
+        if (userCredential.user == null) {
+          return 'Failed to sign in with Google.';
+        }
+        displayName = account.displayName;
+        email = account.email;
+        photoUrl = account.photoUrl;
       }
 
       final firestore = FirebaseFirestore.instance;
       final uid = userCredential.user!.uid;
-      final cleanEmail = account.email.trim().toLowerCase();
+      final cleanEmail = (email ?? userCredential.user!.email ?? '').trim().toLowerCase();
 
       // Check if user document exists
       final userDoc = await firestore.collection('users').doc(uid).get();
@@ -731,15 +777,15 @@ class SplitwiseProvider extends ChangeNotifier {
       if (userDoc.exists && userDoc.data() != null) {
         // Existing user - update profile info from Google if changed
         appUser = User.fromJson(userDoc.data()!);
-        final needsUpdate = appUser.name != (account.displayName ?? appUser.name) ||
+        final needsUpdate = appUser.name != (displayName ?? appUser.name) ||
             appUser.email != cleanEmail ||
-            appUser.avatarUrl != account.photoUrl ||
+            appUser.avatarUrl != photoUrl ||
             !appUser.isEmailVerified;
         if (needsUpdate) {
           appUser = appUser.copyWith(
-            name: account.displayName ?? appUser.name,
+            name: displayName ?? appUser.name,
             email: cleanEmail,
-            avatarUrl: account.photoUrl,
+            avatarUrl: photoUrl,
             isEmailVerified: true, // Google emails are pre-verified
           );
           await firestore.collection('users').doc(uid).set(appUser.toJson());
@@ -747,30 +793,32 @@ class SplitwiseProvider extends ChangeNotifier {
       } else {
         // Check if there is an existing placeholder/legacy document by email
         List<String> existingFriendIds = [];
-        final existingByEmail = await firestore
-            .collection('users')
-            .where('email', isEqualTo: cleanEmail)
-            .limit(1)
-            .get();
-        if (existingByEmail.docs.isNotEmpty) {
-          final existingDoc = existingByEmail.docs.first;
-          final existingData = existingDoc.data();
-          if (existingData['friendIds'] != null) {
-            existingFriendIds = (existingData['friendIds'] as List<dynamic>).cast<String>();
-          }
-          if (existingDoc.id != uid) {
-            await firestore.collection('users').doc(existingDoc.id).delete().catchError((_) {});
+        if (cleanEmail.isNotEmpty) {
+          final existingByEmail = await firestore
+              .collection('users')
+              .where('email', isEqualTo: cleanEmail)
+              .limit(1)
+              .get();
+          if (existingByEmail.docs.isNotEmpty) {
+            final existingDoc = existingByEmail.docs.first;
+            final existingData = existingDoc.data();
+            if (existingData['friendIds'] != null) {
+              existingFriendIds = (existingData['friendIds'] as List<dynamic>).cast<String>();
+            }
+            if (existingDoc.id != uid) {
+              await firestore.collection('users').doc(existingDoc.id).delete().catchError((_) {});
+            }
           }
         }
 
         // New user - create document
         appUser = User(
           id: uid,
-          name: account.displayName ?? 'Google User',
+          name: displayName ?? 'Google User',
           email: cleanEmail,
           isEmailVerified: true, // Google emails are pre-verified
           createdAt: DateTime.now(),
-          avatarUrl: account.photoUrl,
+          avatarUrl: photoUrl,
           friendIds: existingFriendIds,
         );
         await firestore.collection('users').doc(uid).set(appUser.toJson());
@@ -826,6 +874,9 @@ class SplitwiseProvider extends ChangeNotifier {
       return 'Google sign-in failed: ${e.description ?? e.code.name}';
     } on FirebaseAuthException catch (e) {
       debugPrint('Google sign-in Firebase error: ${e.code} - ${e.message}');
+      if (e.code == 'popup-closed-by-user' || e.code == 'cancelled-popup-request') {
+        return null; // User simply closed the Google sign-in popup on Web
+      }
       if (e.code == 'account-exists-with-different-credential') {
         return 'An account already exists with this email. Please sign in with your password.';
       }
