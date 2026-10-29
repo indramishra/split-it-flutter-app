@@ -207,19 +207,14 @@ class SplitwiseProvider extends ChangeNotifier {
     try {
       final firestore = FirebaseFirestore.instance;
 
-      // Check email uniqueness in Firestore
-      if (cleanEmail.isNotEmpty) {
-        final existing = await firestore
-            .collection('users')
-            .where('email', isEqualTo: cleanEmail)
-            .limit(1)
-            .get();
-        if (existing.docs.isNotEmpty) {
-          return 'An account with this email already exists. Please log in.';
-        }
-      }
+      // NOTE: We do NOT pre-check Firestore for email uniqueness here.
+      // Doing so causes a false "already exists" error when a Firestore doc exists
+      // from a previous Google Sign-In but no email+password Firebase Auth account
+      // was ever created — the user then cannot register OR log in with email+password.
+      // Firebase Auth's createUserWithEmailAndPassword is the authoritative duplicate
+      // check and handles all providers correctly.
 
-      // Check phone uniqueness if provided
+      // Check phone uniqueness in Firestore (no Firebase Auth equivalent for phone+password)
       if (cleanPhone != null && cleanPhone.isNotEmpty) {
         final phoneExisting = await firestore
             .collection('users')
@@ -243,9 +238,67 @@ class SplitwiseProvider extends ChangeNotifier {
           await authCredential.user?.sendEmailVerification();
         } on FirebaseAuthException catch (e) {
           if (e.code == 'email-already-in-use') {
-            return 'An account with this email already exists. Please log in.';
+            // Attempt auto-login if the password matches the existing account
+            try {
+              final loginCred = await _auth.signInWithEmailAndPassword(
+                email: cleanEmail,
+                password: password,
+              );
+              if (loginCred.user != null) {
+                final uid = loginCred.user!.uid;
+                final snap = await firestore.collection('users').doc(uid).get();
+                User appUser;
+                if (snap.exists && snap.data() != null) {
+                  appUser = User.fromJson(snap.data()!);
+                } else {
+                  appUser = User(
+                    id: uid,
+                    name: cleanName,
+                    email: cleanEmail,
+                    isEmailVerified: loginCred.user!.emailVerified,
+                    createdAt: DateTime.now(),
+                    phoneNumber: cleanPhone,
+                    isPhoneVerified: false,
+                  );
+                  await firestore.collection('users').doc(uid).set(appUser.toJson());
+                }
+                _currentUser = appUser;
+                if (!_users.any((u) => u.id == appUser.id)) _users.add(appUser);
+                _bindUserStreams();
+                try {
+                  final prefs = await SharedPreferences.getInstance();
+                  await prefs.setString('active_user_id', appUser.id);
+                } catch (_) {}
+                notifyListeners();
+                return null; // Seamless login!
+              }
+            } catch (_) {
+              // Sign-in with this password failed (wrong password or Google user)
+            }
+            return 'An account with this email already exists. If you signed up with Google, tap "Continue with Google". Otherwise, switch to the Log In tab.';
           }
           return 'Registration failed: ${e.message}';
+        }
+      }
+
+      // Check if there is an existing placeholder user doc (e.g. from addFriend) to preserve friend connections
+      List<String> existingFriendIds = [];
+      if (cleanEmail.isNotEmpty) {
+        final existingSnap = await firestore
+            .collection('users')
+            .where('email', isEqualTo: cleanEmail)
+            .limit(1)
+            .get();
+        if (existingSnap.docs.isNotEmpty) {
+          final existingDoc = existingSnap.docs.first;
+          final existingData = existingDoc.data();
+          if (existingData['friendIds'] != null) {
+            existingFriendIds = (existingData['friendIds'] as List<dynamic>).cast<String>();
+          }
+          final newUid = authCredential?.user?.uid;
+          if (newUid != null && existingDoc.id != newUid) {
+            await firestore.collection('users').doc(existingDoc.id).delete().catchError((_) {});
+          }
         }
       }
 
@@ -260,6 +313,7 @@ class SplitwiseProvider extends ChangeNotifier {
         createdAt: DateTime.now(),
         phoneNumber: cleanPhone,
         isPhoneVerified: false,
+        friendIds: existingFriendIds,
       );
 
       await firestore
@@ -354,24 +408,92 @@ class SplitwiseProvider extends ChangeNotifier {
             email: cleanEmail,
             password: password,
           );
-          
-          // Get user data from Firestore
+
+          // Get user data from Firestore by Firebase Auth UID
           final snap = await firestore
               .collection('users')
               .doc(authCredential.user!.uid)
               .get();
-          
-          if (snap.exists) {
+
+          if (snap.exists && snap.data() != null) {
             user = User.fromJson(snap.data()!);
+          } else {
+            // Check if user exists by email (e.g. from an addFriend placeholder with a UUID)
+            final emailSnap = await firestore
+                .collection('users')
+                .where('email', isEqualTo: cleanEmail)
+                .limit(1)
+                .get();
+            if (emailSnap.docs.isNotEmpty) {
+              final oldDoc = emailSnap.docs.first;
+              final oldData = oldDoc.data();
+              final migratedUser = User.fromJson({
+                ...oldData,
+                'id': authCredential.user!.uid,
+                'isEmailVerified': authCredential.user!.emailVerified,
+              });
+              await firestore
+                  .collection('users')
+                  .doc(authCredential.user!.uid)
+                  .set(migratedUser.toJson());
+              if (oldDoc.id != authCredential.user!.uid) {
+                await firestore.collection('users').doc(oldDoc.id).delete().catchError((_) {});
+              }
+              user = migratedUser;
+            } else {
+              // Rebuild the document from Firebase Auth profile
+              final fbUser = authCredential.user!;
+              final recoveredUser = User(
+                id: fbUser.uid,
+                name: fbUser.displayName ?? cleanEmail.split('@').first,
+                email: cleanEmail,
+                isEmailVerified: fbUser.emailVerified,
+                createdAt: DateTime.now(),
+              );
+              await firestore
+                  .collection('users')
+                  .doc(fbUser.uid)
+                  .set(recoveredUser.toJson());
+              user = recoveredUser;
+            }
           }
         } on FirebaseAuthException catch (e) {
-          if (e.code == 'user-not-found' || e.code == 'wrong-password' || e.code == 'invalid-credential') {
-            return 'Incorrect email or password.';
+          debugPrint('login FirebaseAuthException: ${e.code} - ${e.message}');
+          // Check Firestore to see if this user exists with a custom password (from reset password or phone)
+          final firestoreSnap = await firestore
+              .collection('users')
+              .where('email', isEqualTo: cleanEmail)
+              .limit(1)
+              .get();
+
+          if (firestoreSnap.docs.isNotEmpty) {
+            final docData = firestoreSnap.docs.first.data();
+            final storedPassword = docData['password'] as String?;
+            if (storedPassword != null && storedPassword == password) {
+              // Password matches Firestore stored password!
+              user = User.fromJson(docData);
+            } else if (storedPassword == null) {
+              return 'This email is registered with Google. Please tap "Continue with Google" below.';
+            } else {
+              return 'Incorrect password. Please try again or tap "Forgot Password?".';
+            }
           }
-          if (e.code == 'user-disabled') {
-            return 'This account has been disabled.';
+
+          if (user == null) {
+            if (e.code == 'wrong-password') {
+              return 'Incorrect password. Please try again or tap "Forgot Password?".';
+            }
+            if (e.code == 'user-not-found') {
+              return 'No account found with this email. Please switch to Sign Up.';
+            }
+            if (e.code == 'user-disabled') {
+              return 'This account has been disabled.';
+            }
+            if (e.code == 'invalid-credential') {
+              return 'Incorrect email or password. If you signed up with Google, please tap "Continue with Google".';
+            }
+            return 'Login failed: ${e.message}';
           }
-          return 'Login failed: ${e.message}';
         }
       } else {
         // Phone + password login (find user by phone, then verify password)
@@ -600,36 +722,56 @@ class SplitwiseProvider extends ChangeNotifier {
 
       final firestore = FirebaseFirestore.instance;
       final uid = userCredential.user!.uid;
+      final cleanEmail = account.email.trim().toLowerCase();
 
       // Check if user document exists
       final userDoc = await firestore.collection('users').doc(uid).get();
       User appUser;
 
-      if (userDoc.exists) {
+      if (userDoc.exists && userDoc.data() != null) {
         // Existing user - update profile info from Google if changed
         appUser = User.fromJson(userDoc.data()!);
         final needsUpdate = appUser.name != (account.displayName ?? appUser.name) ||
-            appUser.email != account.email ||
+            appUser.email != cleanEmail ||
             appUser.avatarUrl != account.photoUrl ||
             !appUser.isEmailVerified;
         if (needsUpdate) {
           appUser = appUser.copyWith(
             name: account.displayName ?? appUser.name,
-            email: account.email,
+            email: cleanEmail,
             avatarUrl: account.photoUrl,
             isEmailVerified: true, // Google emails are pre-verified
           );
           await firestore.collection('users').doc(uid).set(appUser.toJson());
         }
       } else {
+        // Check if there is an existing placeholder/legacy document by email
+        List<String> existingFriendIds = [];
+        final existingByEmail = await firestore
+            .collection('users')
+            .where('email', isEqualTo: cleanEmail)
+            .limit(1)
+            .get();
+        if (existingByEmail.docs.isNotEmpty) {
+          final existingDoc = existingByEmail.docs.first;
+          final existingData = existingDoc.data();
+          if (existingData['friendIds'] != null) {
+            existingFriendIds = (existingData['friendIds'] as List<dynamic>).cast<String>();
+          }
+          if (existingDoc.id != uid) {
+            await firestore.collection('users').doc(existingDoc.id).delete().catchError((_) {});
+          }
+        }
+
         // New user - create document
         appUser = User(
           id: uid,
           name: account.displayName ?? 'Google User',
-          email: account.email,
+          email: cleanEmail,
           isEmailVerified: true, // Google emails are pre-verified
           createdAt: DateTime.now(),
           avatarUrl: account.photoUrl,
+          friendIds: existingFriendIds,
         );
         await firestore.collection('users').doc(uid).set(appUser.toJson());
 
