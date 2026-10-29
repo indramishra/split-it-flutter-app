@@ -12,6 +12,8 @@ jobs:
   build_and_deploy:
     name: Build APK, Web & Deploy to Firebase
     runs-on: ubuntu-latest
+    env:
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPLITWISE_APP_CD9933 }}
 
     steps:
       - name: Checkout Repository
@@ -74,21 +76,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Deploy to Firebase Hosting & Rules (Service Account)
-        if: env.HAS_SERVICE_ACCOUNT == 'true'
+        if: env.FIREBASE_SERVICE_ACCOUNT != ''
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: '${{ secrets.GITHUB_TOKEN }}'
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPLITWISE_APP_CD9933 }}'
           channelId: live
           projectId: splitwise-app-cd9933
-        env:
-          HAS_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPLITWISE_APP_CD9933 != '' }}
 
       - name: Deploy to Firebase Hosting & Rules (Token Fallback)
-        if: env.HAS_TOKEN == 'true' && env.HAS_SERVICE_ACCOUNT != 'true'
-        run: |
-          npm install -g firebase-tools
-          firebase deploy --only hosting,firestore:rules --token "${{ secrets.FIREBASE_TOKEN }}" --project splitwise-app-cd9933
+        if: env.FIREBASE_SERVICE_ACCOUNT == ''
         env:
-          HAS_TOKEN: ${{ secrets.FIREBASE_TOKEN != '' }}
-          HAS_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SPLITWISE_APP_CD9933 != '' }}
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          if [ -n "$FIREBASE_TOKEN" ]; then
+            echo "FIREBASE_TOKEN detected. Deploying to Firebase Hosting & Firestore Rules..."
+            npx --yes firebase-tools deploy --only hosting,firestore:rules --token "$FIREBASE_TOKEN" --project splitwise-app-cd9933
+          else
+            echo "Neither FIREBASE_SERVICE_ACCOUNT nor FIREBASE_TOKEN is set. Skipping automated Firebase deployment."
+          fi
