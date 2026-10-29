@@ -720,12 +720,13 @@ class SplitwiseProvider extends ChangeNotifier {
         googleProvider.addScope('email');
         googleProvider.addScope('profile');
         userCredential = await _auth.signInWithPopup(googleProvider);
-        if (userCredential.user == null) {
+        final fbUser = userCredential.user;
+        if (fbUser == null) {
           return 'Failed to sign in with Google.';
         }
-        displayName = userCredential.user!.displayName;
-        email = userCredential.user!.email;
-        photoUrl = userCredential.user!.photoURL;
+        displayName = fbUser.displayName;
+        email = fbUser.email;
+        photoUrl = fbUser.photoURL;
       } else {
         const webClientId = '236349691458-bom1i04b9f5fl6pdm28i1vckcdkprl1h.apps.googleusercontent.com';
 
@@ -758,17 +759,22 @@ class SplitwiseProvider extends ChangeNotifier {
 
         userCredential = await _auth.signInWithCredential(credential);
 
-        if (userCredential.user == null) {
+        final fbUser = userCredential.user;
+        if (fbUser == null) {
           return 'Failed to sign in with Google.';
         }
-        displayName = account.displayName;
-        email = account.email;
-        photoUrl = account.photoUrl;
+        displayName = account.displayName ?? fbUser.displayName;
+        email = account.email.isNotEmpty ? account.email : fbUser.email;
+        photoUrl = account.photoUrl ?? fbUser.photoURL;
       }
 
+      final fbUser = userCredential.user;
+      if (fbUser == null) {
+        return 'Failed to sign in with Google.';
+      }
       final firestore = FirebaseFirestore.instance;
-      final uid = userCredential.user!.uid;
-      final cleanEmail = (email ?? userCredential.user!.email ?? '').trim().toLowerCase();
+      final uid = fbUser.uid;
+      final cleanEmail = (email ?? fbUser.email ?? '').trim().toLowerCase();
 
       // Check if user document exists
       final userDoc = await firestore.collection('users').doc(uid).get();
@@ -776,7 +782,8 @@ class SplitwiseProvider extends ChangeNotifier {
 
       if (userDoc.exists && userDoc.data() != null) {
         // Existing user - update profile info from Google if changed
-        appUser = User.fromJson(userDoc.data()!);
+        final data = userDoc.data()!;
+        appUser = User.fromJson({...data, 'id': uid});
         final needsUpdate = appUser.name != (displayName ?? appUser.name) ||
             appUser.email != cleanEmail ||
             appUser.avatarUrl != photoUrl ||
